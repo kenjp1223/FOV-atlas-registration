@@ -137,7 +137,8 @@ Final output CSV (one row per cell)
 |--------|------|--------|
 | 1 — FOV Alignment | FOV → Section rigid transform + landmark pairing | **Done** |
 | 2 — Atlas Registration | Atlas rotation (live preview) + Section→Atlas TPS, one widget | **Done** |
-| Steps 3–5 | CCF unprojection + region lookup + bregma coords | **TODO** |
+| 3 — Coordinate Readout | CCF voxel lookup + region name + AP/ML/DV mm | **Done** |
+| Image warp visualisation | Atlas↔section warp overlay | **Under review** |
 
 ---
 
@@ -171,6 +172,28 @@ Open widgets from **Plugins → Atlas Registration**.
 | DV   | ventral to bregma  |
 
 Atlas orientation default: **coronal** (AP = Z axis of CCF volume).
+
+---
+
+## Bregma coordinate conversion
+
+The conversion from Allen CCFv3 voxel indices to Paxinos-Franklin stereotaxic
+coordinates (AP / ML / DV mm relative to bregma) applies:
+
+- A **5° AP–DV tilt correction** to account for the angle difference between
+  the Allen CCF reference frame and the stereotaxic flat-skull position
+- A **DV scale factor** (0.9434) calibrated against atlas landmarks
+
+This approach follows the methodology described by:
+
+- **Bohan Zhao** — *Aligning Allen CCF to Paxinos-Franklin atlas*  
+  <https://bohanzhao.com/atlas/>
+
+- **Cortex Lab** — *AllenCCF: alignment tools for the Allen Common Coordinate Framework*  
+  <https://github.com/cortex-lab/allenCCF>
+
+The bregma position used as the origin is (AP=5400 µm, DV=332 µm, ML=5739 µm)
+in Allen CCFv3 25 µm voxel space.
 
 ---
 

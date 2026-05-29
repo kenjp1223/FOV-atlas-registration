@@ -6,9 +6,15 @@ dist/
 build/
 .pytest_cache/
 .mypy_cache/
+
+# Large atlas data — never commit
+CCF3/
 *.tif
 *.tiff
 *.nii
 *.nii.gz
+*.nrrd
+
+# Session output CSVs — too large/transient for git
 *.csv
 !tests/data/

@@ -11,6 +11,10 @@ contributions:
       python_name: napari_atlas_registration._widget_atlas_registration:AtlasRegistrationWidget
       title: Step 2 — Atlas Registration
 
+    - id: napari-atlas-registration.coordinate_readout
+      python_name: napari_atlas_registration._widget_coordinate_readout:CoordinateReadoutWidget
+      title: Step 3 — Coordinate Readout
+
     - id: napari-atlas-registration.inverse_warp
       python_name: napari_atlas_registration._widget_inverse_warp:InverseWarpWidget
       title: Inverse Warp & Coordinate Readout
@@ -22,6 +26,10 @@ contributions:
 
     - command: napari-atlas-registration.atlas_registration
       display_name: "2 — Atlas Registration"
+      autogenerate: false
+
+    - command: napari-atlas-registration.coordinate_readout
+      display_name: "3 — Coordinate Readout"
       autogenerate: false
 
     - command: napari-atlas-registration.inverse_warp
