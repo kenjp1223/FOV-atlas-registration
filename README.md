@@ -22,7 +22,37 @@ Inputs
   Annotation volume  — Allen CCFv3 annotation_25.nrrd / annotation.tif
 ```
 
-### Step 1 — Atlas rotation  `[ DONE ]`
+### Step 1 — FOV → Section  `[ DONE ]`
+> Widget: **1 — FOV Alignment**
+
+Rigid alignment (translate / rotate / scale) of the small FOV image onto the
+full brain section. Both images open in independent napari windows.
+Landmark pairs placed sequentially. Transform applied to cell coordinates.
+
+```
+T_rigid[FOV → Section]
+(x_fov, y_fov)  →  (x_section, y_section)
+Saves: landmarks.csv | transform.json | cells_section.csv
+```
+
+### Step 2 — Atlas Rotation + Section Alignment  `[ DONE ]`
+> Widget: **2 — Atlas Registration**
+
+Two-phase widget, same two windows throughout:
+- **Main viewer** — rotating atlas slice (live oblique preview)
+- **Second window** — section image (reference)
+
+**Phase 1:** Adjust Rx/Ry/Rz + Z-slice until the atlas matches the section.
+**Phase 2:** Click "Add pair" — click atlas (main) → click section (second) → TPS fitted.
+
+```
+Phase 1: rx, ry, rz (°) | z_index | rotation_matrix_3x3
+Phase 2: T_TPS[Section → Atlas slice]
+(x_section, y_section)  →  (x_atlas_slice, y_atlas_slice)
+Saves: _settings.json | _landmarks.csv | _cells_atlas_slice.csv
+```
+
+### ~~Step 1 — Atlas rotation~~  *(merged into Step 2)*
 > Widget: **1 — Atlas Setup**
 
 Rotate the 3-D CCF atlas to match the cutting angle of the section.
@@ -105,11 +135,9 @@ Final output CSV (one row per cell)
 
 | Widget | Step | Status |
 |--------|------|--------|
-| 1 — Atlas Setup | Atlas rotation + oblique slice export | **Done** |
-| 2 — FOV Alignment | FOV → Section rigid transform + landmark pairing | **Done** |
-| 3 — Section-Atlas Alignment | Section → Atlas TPS (replaces BigWarp) | **Done** |
-| Target Image | Helper — loads section into second window | **Done** |
-| Steps 4–6 | CCF unprojection + region lookup + bregma coords | **TODO** |
+| 1 — FOV Alignment | FOV → Section rigid transform + landmark pairing | **Done** |
+| 2 — Atlas Registration | Atlas rotation (live preview) + Section→Atlas TPS, one widget | **Done** |
+| Steps 3–5 | CCF unprojection + region lookup + bregma coords | **TODO** |
 
 ---
 

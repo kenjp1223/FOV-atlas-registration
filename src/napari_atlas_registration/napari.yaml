@@ -3,41 +3,25 @@ display_name: Atlas Registration
 
 contributions:
   commands:
-    - id: napari-atlas-registration.atlas_setup
-      python_name: napari_atlas_registration._widget_rotation:AtlasSetupWidget
-      title: Step 1 — Atlas Setup
-
     - id: napari-atlas-registration.fov_alignment
       python_name: napari_atlas_registration._widget_fov_alignment:FOVAlignmentWidget
-      title: Step 2 — FOV Alignment
+      title: Step 1 — FOV Alignment
 
-    - id: napari-atlas-registration.section_atlas
-      python_name: napari_atlas_registration._widget_section_atlas:SectionAtlasWidget
-      title: Step 3 — Section-Atlas Alignment
-
-    - id: napari-atlas-registration.target_image
-      python_name: napari_atlas_registration._widget_target:TargetImageWidget
-      title: Target Image (helper)
+    - id: napari-atlas-registration.atlas_registration
+      python_name: napari_atlas_registration._widget_atlas_registration:AtlasRegistrationWidget
+      title: Step 2 — Atlas Registration
 
     - id: napari-atlas-registration.inverse_warp
       python_name: napari_atlas_registration._widget_inverse_warp:InverseWarpWidget
       title: Inverse Warp & Coordinate Readout
 
   widgets:
-    - command: napari-atlas-registration.atlas_setup
-      display_name: "1 — Atlas Setup"
-      autogenerate: false
-
     - command: napari-atlas-registration.fov_alignment
-      display_name: "2 — FOV Alignment"
+      display_name: "1 — FOV Alignment"
       autogenerate: false
 
-    - command: napari-atlas-registration.section_atlas
-      display_name: "3 — Section-Atlas Alignment"
-      autogenerate: false
-
-    - command: napari-atlas-registration.target_image
-      display_name: "Target Image"
+    - command: napari-atlas-registration.atlas_registration
+      display_name: "2 — Atlas Registration"
       autogenerate: false
 
     - command: napari-atlas-registration.inverse_warp
