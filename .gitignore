@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+*.tif
+*.tiff
+*.nii
+*.nii.gz
+*.csv
+!tests/data/

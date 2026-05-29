@@ -1,0 +1,29 @@
+name: napari-atlas-registration
+display_name: Atlas Registration
+
+contributions:
+  commands:
+    - id: napari-atlas-registration.atlas_setup
+      python_name: napari_atlas_registration._widget_rotation:AtlasSetupWidget
+      title: Atlas Setup (Rotation & Bregma)
+
+    - id: napari-atlas-registration.target_image
+      python_name: napari_atlas_registration._widget_target:TargetImageWidget
+      title: Target Image
+
+    - id: napari-atlas-registration.inverse_warp
+      python_name: napari_atlas_registration._widget_inverse_warp:InverseWarpWidget
+      title: Inverse Warp & Coordinate Readout
+
+  widgets:
+    - command: napari-atlas-registration.atlas_setup
+      display_name: Atlas Setup
+      autogenerate: false
+
+    - command: napari-atlas-registration.target_image
+      display_name: Target Image
+      autogenerate: false
+
+    - command: napari-atlas-registration.inverse_warp
+      display_name: Inverse Warp
+      autogenerate: false
