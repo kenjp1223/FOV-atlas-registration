@@ -22,56 +22,60 @@ Inputs
   Annotation volume  — Allen CCFv3 annotation_25.nrrd / annotation.tif
 ```
 
-### Step 1 — FOV → Section  `[ TODO ]`
-> Widget: **FOV Alignment**
+### Step 1 — Atlas rotation  `[ DONE ]`
+> Widget: **1 — Atlas Setup**
 
-Rigid alignment (translate / rotate / scale) of the FOV image onto the full
-brain section. Both images open in independent napari windows for side-by-side
-comparison. Transform is applied to the cell CSV coordinates.
+Rotate the 3-D CCF atlas to match the cutting angle of the section.
+Interactive Rx / Ry / Rz sliders + Z-slice selector with live oblique preview.
+Exports the rotated atlas slice as a TIFF and a settings JSON carrying the
+rotation matrix, z-index, and voxel spacing — used by Steps 3 and 4.
+
+```
+Saved: rx, ry, rz (°) | z_index | rotation_matrix_3x3 | voxel_spacing_um
+→ atlas_slice.tif  +  _settings.json
+```
+
+### Step 2 — FOV → Section  `[ DONE ]`
+> Widget: **2 — FOV Alignment**
+
+Rigid alignment (translate / rotate / scale) of the small FOV image onto the
+full brain section. Both images open in independent napari windows.
+Landmark pairs are placed sequentially (click FOV → click section → row in table).
+Transform is applied to the cell CSV coordinates.
 
 ```
 T_rigid[FOV → Section]
 (x_fov, y_fov)  →  (x_section, y_section)
+Saves: landmarks.csv | transform.json | cells_section.csv
 ```
 
-### Step 2 — Section → Rotated Atlas slice  `[ TODO ]`
-> Widget: **Section–Atlas Alignment**
+### Step 3 — Section → Rotated Atlas slice  `[ DONE ]`
+> Widget: **3 — Section-Atlas Alignment**
 
-Affine / landmark-based alignment of the section image to the rotated atlas
-slice. Landmarks are placed interactively inside napari (replaces BigWarp).
-A thin-plate spline (TPS) is fitted to the landmarks and applied to the
-section cell coordinates.
+TPS (thin-plate spline) alignment of the section image to the exported atlas
+slice. Replaces BigWarp — everything runs inside napari.
+Section in main viewer, atlas slice in second window.
+Landmark pairs placed sequentially; TPS fitted and applied to cell coordinates.
 
 ```
-T_affine[Section → Atlas slice]
+T_TPS[Section → Atlas slice]
 (x_section, y_section)  →  (x_atlas_slice, y_atlas_slice)
+Saves: landmarks.csv | session.json | cells_atlas_slice.csv
 ```
 
-### Step 3 — Atlas rotation  `[ DONE ]`
-> Widget: **Atlas Setup**
+### Step 4 — Rotated atlas coords → Original CCF coords  `[ TODO ]`
 
-Interactive Rx / Ry / Rz sliders + Z-slice selector produce a live oblique
-preview of the 3-D atlas. The rotation that best matches the cutting angle of
-the section is saved together with the slice index and voxel spacing.
+Apply the inverse rotation matrix (stored in `_settings.json`) to unproject
+each atlas-slice pixel to the original CCFv3 voxel index.
 
 ```
-Saved: rx, ry, rz (degrees)  |  z_index  |  rotation_matrix_3x3  |  voxel_spacing_um
-(x_atlas_slice, y_atlas_slice)  →  (x_rot, y_rot, z_rot)  [rotated 3D voxel]
-```
-
-### Step 4 — Rotated atlas coords → Original CCF coords  `[ IN PROGRESS ]`
-
-The saved rotation matrix is inverted and applied to each rotated-atlas voxel
-to recover the original CCFv3 voxel index.
-
-```
-R_inv  ×  (x_rot, y_rot, z_rot)  →  (ap_idx, dv_idx, ml_idx)  [CCF voxel]
+(x_atlas_slice, y_atlas_slice, z_index)  →  [R_inv]  →  (ap_idx, dv_idx, ml_idx)
 ```
 
 ### Step 5 — Region lookup  `[ TODO ]`
 
-The CCF annotation volume is queried at each voxel to retrieve the Allen
-structure ID, acronym, and full region name.
+Query the CCF annotation volume at each voxel to get Allen structure ID,
+acronym, and full region name.
 
 ```
 annotation[ap_idx, dv_idx, ml_idx]  →  structure_id, acronym, full_name
@@ -91,8 +95,8 @@ atlas.
 
 ```
 Final output CSV (one row per cell)
-  x_fov · y_fov · x_section · y_section · ap_idx · dv_idx · ml_idx
-  · structure_id · acronym · AP_mm · ML_mm · DV_mm
+  x_fov · y_fov · x_section · y_section · x_atlas_slice · y_atlas_slice
+  · ap_idx · dv_idx · ml_idx · structure_id · acronym · AP_mm · ML_mm · DV_mm
 ```
 
 ---
@@ -101,11 +105,11 @@ Final output CSV (one row per cell)
 
 | Widget | Step | Status |
 |--------|------|--------|
-| Atlas Setup | Step 3 — atlas rotation + oblique slice | **Done** |
-| Target Image | loads section image into second window | **Done** |
-| FOV Alignment | Step 1 — FOV→Section rigid transform | **TODO** |
-| Section–Atlas Alignment | Step 2 — Section→Atlas affine/TPS (replaces BigWarp) | **TODO** |
-| Inverse Warp | Steps 4–6 — CCF lookup + bregma coords | **In progress** |
+| 1 — Atlas Setup | Atlas rotation + oblique slice export | **Done** |
+| 2 — FOV Alignment | FOV → Section rigid transform + landmark pairing | **Done** |
+| 3 — Section-Atlas Alignment | Section → Atlas TPS (replaces BigWarp) | **Done** |
+| Target Image | Helper — loads section into second window | **Done** |
+| Steps 4–6 | CCF unprojection + region lookup + bregma coords | **TODO** |
 
 ---
 
