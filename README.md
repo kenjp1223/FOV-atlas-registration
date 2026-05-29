@@ -7,7 +7,7 @@ Everything runs inside napari — no BigWarp, no Fiji, no external tools require
 
 ---
 
-## Pipeline
+## Pipeline overview
 
 For **N cells** with pixel coordinates in FOV space, the plugin produces
 per-cell brain region labels and stereotaxic coordinates (AP / ML / DV mm
@@ -15,130 +15,102 @@ relative to bregma).
 
 ```
 Inputs
-  FOV image          — small widefield / confocal acquisition
-  Cell CSV           — (x, y) pixel coords in FOV space
-  Section image      — whole brain section the FOV was taken from
-  3D Atlas (CCF)     — Allen CCFv3 TIFF volume(s), 10 or 25 µm
-  Annotation volume  — Allen CCFv3 annotation_25.nrrd / annotation.tif
-```
+  FOV image             — small widefield / confocal acquisition
+  Cell CSV              — (x, y) pixel coords in FOV space
+  Section image         — whole brain section the FOV was taken from
+  3D Atlas TIFF         — Allen CCFv3 volume, 10 or 25 µm
+  annotation.tif        — Allen CCFv3 annotation volume (25 µm)
+  Allen_annotation_labels.csv — region id → name, acronym
 
-### Step 1 — FOV → Section  `[ DONE ]`
-> Widget: **1 — FOV Alignment**
-
-Rigid alignment (translate / rotate / scale) of the small FOV image onto the
-full brain section. Both images open in independent napari windows.
-Landmark pairs placed sequentially. Transform applied to cell coordinates.
-
-```
-T_rigid[FOV → Section]
-(x_fov, y_fov)  →  (x_section, y_section)
-Saves: landmarks.csv | transform.json | cells_section.csv
-```
-
-### Step 2 — Atlas Rotation + Section Alignment  `[ DONE ]`
-> Widget: **2 — Atlas Registration**
-
-Two-phase widget, same two windows throughout:
-- **Main viewer** — rotating atlas slice (live oblique preview)
-- **Second window** — section image (reference)
-
-**Phase 1:** Adjust Rx/Ry/Rz + Z-slice until the atlas matches the section.
-**Phase 2:** Click "Add pair" — click atlas (main) → click section (second) → TPS fitted.
-
-```
-Phase 1: rx, ry, rz (°) | z_index | rotation_matrix_3x3
-Phase 2: T_TPS[Section → Atlas slice]
-(x_section, y_section)  →  (x_atlas_slice, y_atlas_slice)
-Saves: _settings.json | _landmarks.csv | _cells_atlas_slice.csv
-```
-
-### ~~Step 1 — Atlas rotation~~  *(merged into Step 2)*
-> Widget: **1 — Atlas Setup**
-
-Rotate the 3-D CCF atlas to match the cutting angle of the section.
-Interactive Rx / Ry / Rz sliders + Z-slice selector with live oblique preview.
-Exports the rotated atlas slice as a TIFF and a settings JSON carrying the
-rotation matrix, z-index, and voxel spacing — used by Steps 3 and 4.
-
-```
-Saved: rx, ry, rz (°) | z_index | rotation_matrix_3x3 | voxel_spacing_um
-→ atlas_slice.tif  +  _settings.json
-```
-
-### Step 2 — FOV → Section  `[ DONE ]`
-> Widget: **2 — FOV Alignment**
-
-Rigid alignment (translate / rotate / scale) of the small FOV image onto the
-full brain section. Both images open in independent napari windows.
-Landmark pairs are placed sequentially (click FOV → click section → row in table).
-Transform is applied to the cell CSV coordinates.
-
-```
-T_rigid[FOV → Section]
-(x_fov, y_fov)  →  (x_section, y_section)
-Saves: landmarks.csv | transform.json | cells_section.csv
-```
-
-### Step 3 — Section → Rotated Atlas slice  `[ DONE ]`
-> Widget: **3 — Section-Atlas Alignment**
-
-TPS (thin-plate spline) alignment of the section image to the exported atlas
-slice. Replaces BigWarp — everything runs inside napari.
-Section in main viewer, atlas slice in second window.
-Landmark pairs placed sequentially; TPS fitted and applied to cell coordinates.
-
-```
-T_TPS[Section → Atlas slice]
-(x_section, y_section)  →  (x_atlas_slice, y_atlas_slice)
-Saves: landmarks.csv | session.json | cells_atlas_slice.csv
-```
-
-### Step 4 — Rotated atlas coords → Original CCF coords  `[ TODO ]`
-
-Apply the inverse rotation matrix (stored in `_settings.json`) to unproject
-each atlas-slice pixel to the original CCFv3 voxel index.
-
-```
-(x_atlas_slice, y_atlas_slice, z_index)  →  [R_inv]  →  (ap_idx, dv_idx, ml_idx)
-```
-
-### Step 5 — Region lookup  `[ TODO ]`
-
-Query the CCF annotation volume at each voxel to get Allen structure ID,
-acronym, and full region name.
-
-```
-annotation[ap_idx, dv_idx, ml_idx]  →  structure_id, acronym, full_name
-```
-
-### Step 6 — CCF → Bregma-relative stereotaxic coords  `[ DONE ]`
-> `coordinates/ccf_to_FP.py`
-
-Converts CCF voxel indices to Paxinos-Franklin / stereotaxic mm with a 5°
-AP–DV tilt correction and DV scale factor calibrated to the Allen CCFv3 25 µm
-atlas.
-
-```
-(ap_idx, dv_idx, ml_idx)  →  (AP_mm, ML_mm, DV_mm)  relative to bregma
-  AP+  = anterior   |   ML+  = right   |   DV+  = ventral
-```
-
-```
-Final output CSV (one row per cell)
-  x_fov · y_fov · x_section · y_section · x_atlas_slice · y_atlas_slice
-  · ap_idx · dv_idx · ml_idx · structure_id · acronym · AP_mm · ML_mm · DV_mm
+Output (cells_final.csv, one row per cell)
+  x_fov · y_fov
+  x_section · y_section
+  x_rot · y_rot · z_rot   (rotated atlas slice pixel coords)
+  x_ccf · y_ccf · z_ccf   (original CCF voxel indices)
+  region_id · region_acronym · region_name · parent_acronym
+  AP_mm · ML_mm · DV_mm   (bregma-relative, Paxinos-Franklin)
 ```
 
 ---
 
-## Current widget status
+## Step-by-step
 
-| Widget | Step | Status |
-|--------|------|--------|
-| 1 — FOV Alignment | FOV → Section rigid transform + landmark pairing | **Done** |
-| 2 — Atlas Registration | Atlas rotation (live preview) + Section→Atlas TPS, one widget | **Done** |
-| 3 — Coordinate Readout | CCF voxel lookup + region name + AP/ML/DV mm | **Done** |
-| Image warp visualisation | Atlas↔section warp overlay | **Under review** |
+### Step 1 — FOV → Section alignment
+> Widget: **1 — FOV Alignment**
+
+Rigid alignment (translate / rotate / uniform scale) of the FOV image onto the
+full brain section. Both images open in independent napari windows for
+side-by-side comparison. Landmark pairs are placed sequentially (click FOV →
+click section → row added to table). The rigid transform is fitted by
+least-squares and applied to all cell coordinates.
+
+```
+T_rigid[FOV → Section]
+(x_fov, y_fov)  →  (x_section, y_section)
+
+Saves: landmarks.csv | transform.json | cells_section.csv
+```
+
+### Step 2 — Atlas rotation + Section alignment
+> Widget: **2 — Atlas Registration**
+
+Two-phase widget. Both phases use the same window pair throughout:
+- **Main viewer** — rotating atlas slice (live oblique preview)
+- **Second window** — section image (reference)
+
+**Phase 1 — Rotation:** Adjust Rx / Ry / Rz sliders and Z-slice until the
+atlas slice visually matches the section. Click *Save & lock rotation* to
+export the atlas slice TIFF and settings JSON, and unlock Phase 2.
+
+**Phase 2 — Landmark alignment:** Click *Add pair* → click a landmark on the
+atlas slice (main) → click the matching point on the section (second) → pair
+saved to table. Repeat for ≥ 4 pairs (6–10 recommended). Click *Compute TPS*
+to fit a thin-plate spline transform in both directions. Apply to cells.
+
+The save also computes the unrotation: `(x_rot, y_rot, z_rot)` →
+`R_inv` → `(x_ccf, y_ccf, z_ccf)` original CCF voxel indices.
+
+```
+Phase 1: rx, ry, rz (°) | z_index | rotation_matrix_3x3 | voxel_spacing_um
+Phase 2: T_TPS[Section → Atlas slice]
+(x_section, y_section)  →  (x_rot, y_rot)  +  z_rot = z_index
+R_inv → (x_ccf, y_ccf, z_ccf)
+
+Saves: _settings.json | _landmarks.csv | _cells_atlas_slice.csv
+       _atlas_warped_to_section.tif (*) | _section_warped_to_atlas.tif (*)
+       (*) image warp visualisation — under review
+```
+
+### Step 3 — Region lookup + Bregma coordinates
+> Widget: **3 — Coordinate Readout**
+
+Loads the cells CSV (with `x_ccf, y_ccf, z_ccf`) and:
+
+1. **Region lookup** — queries `annotation.tif` at `annotation[ap, dv, ml]`
+   → structure ID → joins Allen labels CSV → region name, acronym,
+   parent acronym.
+
+2. **AP / ML / DV** — calls `ccf25_to_bregma()` with the user-specified axis
+   mapping (configurable dropdowns; preset buttons for Coronal / Sagittal /
+   Axial).
+
+```
+annotation[ap_idx, dv_idx, ml_idx]  →  region_id, acronym, name
+(ap_idx, dv_idx, ml_idx)  →  AP_mm, ML_mm, DV_mm  (bregma-relative)
+
+Saves: cells_final.csv
+```
+
+---
+
+## Widget status
+
+| Widget | Description | Status |
+|--------|-------------|--------|
+| 1 — FOV Alignment | Rigid FOV→Section, sequential landmark pairs | ✅ Done |
+| 2 — Atlas Registration | Atlas rotation (Phase 1) + TPS alignment (Phase 2) | ✅ Done |
+| 3 — Coordinate Readout | CCF region lookup + AP/ML/DV mm | ✅ Done |
+| Image warp overlay | Atlas↔section image warp visualisation | ⚠ Under review |
 
 ---
 
@@ -163,6 +135,22 @@ Open widgets from **Plugins → Atlas Registration**.
 
 ---
 
+## CCF resources
+
+Place the following files in a `CCF3/` folder at the project root
+(already in `.gitignore` — files are too large to commit):
+
+```
+CCF3/
+  annotation_25_coronal.tif   — Allen CCFv3 annotation volume (25 µm)
+  Allen_annotation_labels.csv — region id → name, acronym, parent
+  template_25_coronal.tif     — (optional) anatomy reference
+```
+
+Paths are configurable in the widget; the plugin defaults to `CCF3/`.
+
+---
+
 ## Coordinate conventions
 
 | Axis | Positive direction |
@@ -171,36 +159,37 @@ Open widgets from **Plugins → Atlas Registration**.
 | ML   | right of midline   |
 | DV   | ventral to bregma  |
 
-Atlas orientation default: **coronal** (AP = Z axis of CCF volume).
+Default axis mapping for `annotation_25_coronal.tif` (Allen CCFv3 coronal):
+
+| CCF array axis | Anatomical axis |
+|---------------|-----------------|
+| axis 0 (Z)    | AP              |
+| axis 1 (Y)    | DV              |
+| axis 2 (X)    | ML              |
 
 ---
 
 ## Bregma coordinate conversion
 
 The conversion from Allen CCFv3 voxel indices to Paxinos-Franklin stereotaxic
-coordinates (AP / ML / DV mm relative to bregma) applies:
-
-- A **5° AP–DV tilt correction** to account for the angle difference between
-  the Allen CCF reference frame and the stereotaxic flat-skull position
-- A **DV scale factor** (0.9434) calibrated against atlas landmarks
-
-This approach follows the methodology described by:
+coordinates applies a **5° AP–DV tilt correction** and a **DV scale factor**
+(0.9434) calibrated against atlas landmarks, following:
 
 - **Bohan Zhao** — *Aligning Allen CCF to Paxinos-Franklin atlas*  
   <https://bohanzhao.com/atlas/>
 
-- **Cortex Lab** — *AllenCCF: alignment tools for the Allen Common Coordinate Framework*  
+- **Cortex Lab** — *AllenCCF: alignment tools for the Allen CCF*  
   <https://github.com/cortex-lab/allenCCF>
 
-The bregma position used as the origin is (AP=5400 µm, DV=332 µm, ML=5739 µm)
-in Allen CCFv3 25 µm voxel space.
+Bregma position in Allen CCFv3 25 µm space: AP = 5400 µm, DV = 332 µm, ML = 5739 µm.
+
+Implementation: `src/napari_atlas_registration/coordinates/ccf_to_FP.py`
 
 ---
 
-## Session file (`_settings.json`)
+## Session files
 
-Saved by the Atlas Setup widget. Records everything needed to resume or hand
-off between steps:
+**`_settings.json`** — saved by Phase 1 of the Atlas Registration widget:
 
 ```json
 {
@@ -210,8 +199,15 @@ off between steps:
   "atlas_spacing_um":    { "x": 25.0, "y": 25.0, "z": 25.0 },
   "atlas_shape_zyx":     [528, 320, 456],
   "orientation":         "coronal",
-  "target_resolution":   { "x_um_per_pixel": 0.65, "y_um_per_pixel": 0.65 },
   "flip_horizontal":     false,
   "flip_vertical":       false
 }
+```
+
+**`cells_atlas_slice.csv`** — saved by Phase 2, passed to Step 3:
+
+```
+x_fov, y_fov, x_section, y_section,
+x_rot, y_rot, z_rot,        ← rotated atlas slice pixel coords + z_index
+x_ccf, y_ccf, z_ccf         ← original CCF voxel indices (after R_inv)
 ```
