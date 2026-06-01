@@ -26,9 +26,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-czi = ["czifile"]
-nd2 = ["nd2"]
-dev = ["pytest", "pytest-qt", "napari[testing]"]
+czi  = ["czifile"]
+nd2  = ["nd2"]
+ants = ["antspyx>=0.3.8"]
+dev  = ["pytest", "pytest-qt", "napari[testing]"]
 
 [project.entry-points."napari.manifest"]
 napari-atlas-registration = "napari_atlas_registration:napari.yaml"

@@ -44,6 +44,14 @@ from qtpy.QtWidgets import (
     QSizePolicy, QSpinBox, QTabWidget, QTableWidget, QTableWidgetItem,
     QHeaderView, QVBoxLayout, QWidget,
 )
+
+# ANTs is optional — imported lazily
+def _try_import_ants():
+    try:
+        import ants
+        return ants
+    except ImportError:
+        return None
 from scipy.spatial.transform import Rotation
 from skimage.transform import warp as sk_warp
 
@@ -72,11 +80,12 @@ class AtlasRegistrationWidget(QWidget):
         self._viewer = napari_viewer
 
         # Atlas
-        self._atlas_channels = {}
-        self._atlas_path     = None
-        self._spacing        = [25.0, 25.0, 25.0]
-        self._phase1_locked  = False
-        self._atlas_slice_arr = None   # current high-quality slice (saved in Phase 1)
+        self._atlas_channels    = {}
+        self._atlas_path        = None
+        self._spacing           = [25.0, 25.0, 25.0]
+        self._phase1_locked     = False
+        self._atlas_slice_arr   = None   # primary channel rotated slice (Phase 1)
+        self._atlas_slice_all   = {}     # {name: slice_arr} for ALL channels (Phase 1)
 
         # Section / cells
         self._section_path  = None
@@ -94,9 +103,14 @@ class AtlasRegistrationWidget(QWidget):
         self._atl_lm_layer   = None
         self._sec_lm_layer   = None
 
-        # TPS (fitted in Phase 2)
-        self._tps_fwd  = None   # atlas  → section
-        self._tps_inv  = None   # section→ atlas
+        # Transform (fitted in Phase 2) — ANTs or TPS
+        self._tps_fwd      = None   # TPS: atlas  → section
+        self._tps_inv      = None   # TPS: section → atlas
+        self._ants_tx_fwd  = None   # ANTsTransform: pull atlas→section (affine)
+        self._ants_tx_inv  = None   # ANTsTransform: inverse (affine)
+        self._ants_syn_result = None  # dict from ants.registration() for Affine+SyN
+        self._ants_imgs    = None   # (atlas_ants, section_ants) for image warping
+        self._transform_method = None   # "ants" or "tps"
 
         # Results
         self._cell_pts_atlas      = None
@@ -300,19 +314,21 @@ class AtlasRegistrationWidget(QWidget):
         layout.addWidget(self._table)
         return box
 
-    # ── TPS ──────────────────────────────────────────────────────────────────
+    # ── Transform ────────────────────────────────────────────────────────────
 
     def _build_tps_group(self) -> QGroupBox:
-        box = QGroupBox("TPS transform")
+        box = QGroupBox("Transform  (Thin-Plate Spline)")
         layout = QVBoxLayout(box)
+
         btn = QPushButton("Compute TPS  (needs ≥ 4 pairs)")
         btn.clicked.connect(self._on_compute_tps)
         layout.addWidget(btn)
+
         self._tps_info = QLabel("No transform computed")
         self._tps_info.setWordWrap(True)
         layout.addWidget(self._tps_info)
 
-        btn_apply = QPushButton("Apply TPS → map cells to atlas slice space")
+        btn_apply = QPushButton("Apply → map cells to atlas slice space")
         btn_apply.clicked.connect(self._on_apply_tps)
         layout.addWidget(btn_apply)
         return box
@@ -320,16 +336,12 @@ class AtlasRegistrationWidget(QWidget):
     # ── Warp visualisation ───────────────────────────────────────────────────
 
     def _build_warp_group(self) -> QGroupBox:
-        box = QGroupBox("Image warping  ⚠ experimental")
+        box = QGroupBox("Image warping")
         layout = QVBoxLayout(box)
 
-        warn = QLabel(
-            "⚠  Warp visualisation is under review — output may be incorrect.\n"
-            "Cell coordinate mapping (above) is unaffected."
-        )
-        warn.setWordWrap(True)
-        warn.setStyleSheet("color: #b05000; font-style: italic; font-size: 10px;")
-        layout.addWidget(warn)
+        note = QLabel("Warps images using the fitted TPS.")
+        note.setStyleSheet("font-size: 10px; color: #555;")
+        layout.addWidget(note)
 
         # Atlas → section
         atl_row = QHBoxLayout()
@@ -564,19 +576,22 @@ class AtlasRegistrationWidget(QWidget):
             R_mat = Rotation.from_euler("XYZ", [rx, ry, rz], degrees=True).as_matrix()
             primary = list(self._atlas_channels.values())[0]
 
-            # High-quality atlas slice
-            sl = _oblique_slice(primary, self._spacing, z_idx, rx, ry, rz, order=3)
-            if self._flip_h.isChecked(): sl = np.fliplr(sl)
-            if self._flip_v.isChecked(): sl = np.flipud(sl)
-            self._atlas_slice_arr = sl.copy()
-            slice_path = out / f"{pfx}_atlas_slice.tif"
-            tifffile.imwrite(str(slice_path), sl.astype(np.float32))
-
-            # Update main viewer with high-quality slice
-            for name in self._atlas_channels:
+            # High-quality slice for ALL channels
+            self._atlas_slice_all = {}
+            for name, vol in self._atlas_channels.items():
+                sl = _oblique_slice(vol, self._spacing, z_idx, rx, ry, rz, order=3)
+                if self._flip_h.isChecked(): sl = np.fliplr(sl)
+                if self._flip_v.isChecked(): sl = np.flipud(sl)
+                self._atlas_slice_all[name] = sl.copy()
                 lname = f"atlas_{name}"
                 if lname in self._viewer.layers:
                     self._viewer.layers[lname].data = sl
+
+            # Primary channel (first) stored separately for backward compat
+            primary_name = list(self._atlas_channels.keys())[0]
+            self._atlas_slice_arr = self._atlas_slice_all[primary_name]
+            slice_path = out / f"{pfx}_atlas_slice.tif"
+            tifffile.imwrite(str(slice_path), self._atlas_slice_arr.astype(np.float32))
 
             # Settings JSON
             nz, ny, nx = primary.shape
@@ -744,13 +759,25 @@ class AtlasRegistrationWidget(QWidget):
             pass
 
     def _refresh_lm_layers(self) -> None:
-        atl = np.array([[p["atl"][1], p["atl"][0]] for p in self._pairs]) if self._pairs else np.empty((0,2))
-        sec = np.array([[p["sec"][1], p["sec"][0]] for p in self._pairs]) if self._pairs else np.empty((0,2))
+        atl = np.array([[p["atl"][1], p["atl"][0]] for p in self._pairs]) if self._pairs else np.empty((0, 2))
+        sec = np.array([[p["sec"][1], p["sec"][0]] for p in self._pairs]) if self._pairs else np.empty((0, 2))
+
+        # Atlas viewer — create layer if needed
         if self._atl_lm_layer is not None and "atl_landmarks" in self._viewer.layers:
             self._atl_lm_layer.data = atl
-        if self._sec_lm_layer is not None and self._second_viewer is not None:
-            if "sec_landmarks" in self._second_viewer.layers:
+        elif len(atl):
+            self._atl_lm_layer = self._viewer.add_points(
+                atl, name="atl_landmarks", size=14,
+                face_color="cyan", border_color="white")
+
+        # Section viewer — create layer if needed
+        if self._second_viewer is not None:
+            if self._sec_lm_layer is not None and "sec_landmarks" in self._second_viewer.layers:
                 self._sec_lm_layer.data = sec
+            elif len(sec):
+                self._sec_lm_layer = self._second_viewer.add_points(
+                    sec, name="sec_landmarks", size=14,
+                    face_color="yellow", border_color="white")
 
     def _on_load_landmarks_csv(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -759,13 +786,19 @@ class AtlasRegistrationWidget(QWidget):
         try:
             import pandas as pd
             df = pd.read_csv(path); df.columns = [c.lower() for c in df.columns]
-            required = {"atlas_x", "atlas_y", "sec_x", "sec_y"}
-            if not required.issubset(set(df.columns)):
+            cols = set(df.columns)
+            # Accept rot_atlas_x/y (saved by this plugin) or atlas_x/y (generic)
+            if   "rot_atlas_x" in cols: ax, ay = "rot_atlas_x", "rot_atlas_y"
+            elif "atlas_x"     in cols: ax, ay = "atlas_x",     "atlas_y"
+            else:
                 QMessageBox.critical(self, "Bad CSV",
-                    f"Expected: {required}\nFound: {list(df.columns)}"); return
+                    f"Expected 'rot_atlas_x/y' or 'atlas_x/y'.\nFound: {list(df.columns)}"); return
+            if "sec_x" not in cols or "sec_y" not in cols:
+                QMessageBox.critical(self, "Bad CSV",
+                    f"Missing 'sec_x' / 'sec_y'.\nFound: {list(df.columns)}"); return
             self._pairs = [
-                {"atl": [float(r["atlas_x"]), float(r["atlas_y"])],
-                 "sec": [float(r["sec_x"]),   float(r["sec_y"])]}
+                {"atl": [float(r[ax]), float(r[ay])],
+                 "sec": [float(r["sec_x"]), float(r["sec_y"])]}
                 for _, r in df.iterrows()]
             self._update_table(); self._refresh_lm_layers()
             self._pair_status.setText(f"{len(self._pairs)} pair(s) loaded.")
@@ -773,159 +806,290 @@ class AtlasRegistrationWidget(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Error", str(e))
 
-    # ============================================================ TPS
+    # ============================================================ Transform
 
     def _on_compute_tps(self) -> None:
         if len(self._pairs) < 4:
             QMessageBox.warning(self, "Too few pairs",
                 "Need ≥ 4 pairs. 6–10+ recommended."); return
-        atl_pts = np.array([p["atl"] for p in self._pairs])
+        atl_pts = np.array([p["atl"] for p in self._pairs])  # (N,2) x,y
         sec_pts = np.array([p["sec"] for p in self._pairs])
+        self._compute_tps(atl_pts, sec_pts)
+
+    def _compute_ants(self, atl_pts, sec_pts, method_label) -> None:
+        ants = _try_import_ants()
+        if ants is None:
+            QMessageBox.critical(self, "ANTs not installed",
+                "Install with:  uv sync --extra ants\n\n"
+                "Falling back to TPS.")
+            self._compute_tps_fallback(atl_pts, sec_pts)
+            return
+        if self._atlas_slice_arr is None:
+            QMessageBox.warning(self, "No atlas slice",
+                "Save Phase 1 first — ANTs needs the atlas slice image."); return
+        if self._section_arr is None:
+            QMessageBox.warning(self, "No section", "Load section image first."); return
         try:
-            # Forward: atlas → section  (for warping atlas image into section space)
-            self._tps_fwd = TPSTransform(src_pts=atl_pts, dst_pts=sec_pts)
-            # Inverse: section → atlas  (for mapping cells and warping section image)
-            self._tps_inv = TPSTransform(src_pts=sec_pts, dst_pts=atl_pts)
-            # Residual check
-            pred_fwd = self._tps_fwd(atl_pts)
-            res = float(np.sqrt(((pred_fwd - sec_pts)**2).sum(axis=1)).mean())
+            do_syn_refinement = "Affine + SyN" in method_label
+            transform_type = "syn" if (method_label.strip() == "ANTs SyN (deformable)") else "affine"
+            self._set_status("Fitting ANTs affine from landmarks…")
+
+            atlas_ants   = ants.from_numpy(self._atlas_slice_arr.astype(np.float32))
+            section_ants = ants.from_numpy(self._section_arr.astype(np.float32))
+
+            # ANTs physical coords are (row, col); our pts are (x, y) = (col, row).
+            # from_numpy gives spacing=1/origin=0 so physical == index.
+            # Swap x↔y: physical (row, col) = (y, x).
+            def _xy_to_phys(pts_xy):
+                return pts_xy[:, ::-1]   # (x,y) → (y,x) = (row,col)
+
+            moving_phys = _xy_to_phys(atl_pts)  # atlas  physical (row,col)
+            fixed_phys  = _xy_to_phys(sec_pts)  # section physical (row,col)
+
+            # Fit: moving=atlas, fixed=section  (matches user example)
+            # Returns ANTsTransform (affine) or dict (SyN)
+            result = ants.fit_transform_to_paired_points(
+                moving_phys,
+                fixed_phys,
+                transform_type=transform_type,
+                domain_image=atlas_ants,
+            )
+
+            if isinstance(result, dict):
+                # SyN path
+                self._ants_tx_fwd = result["forward_transform"]
+                self._ants_tx_inv = result["inverse_transform"]
+            else:
+                # Affine path — tx.apply_to_point maps section→atlas (pull direction)
+                self._ants_tx_fwd = result
+                self._ants_tx_inv = result.invert()
+
+            self._ants_imgs        = (atlas_ants, section_ants)
+            self._transform_method = "ants"
+
+            # Residual: map section landmarks through tx_fwd → atlas physical, compare to atlas pts
+            pred_phys = np.array([self._ants_tx_fwd.apply_to_point(p.tolist()) for p in fixed_phys])
+            pred_xy   = pred_phys[:, ::-1]   # (row,col) → (x,y)
+            res = float(np.sqrt(((pred_xy - atl_pts)**2).sum(axis=1)).mean())
+
+            if do_syn_refinement:
+                self._set_status(
+                    f"Affine residual: {res:.1f} px  —  Running SyN refinement (may take a minute)…")
+                import tempfile, os as _os
+                atlas_in_sec = ants.apply_ants_transform_to_image(
+                    self._ants_tx_fwd, atlas_ants, section_ants)
+                with tempfile.TemporaryDirectory() as _tmp:
+                    syn = ants.registration(
+                        fixed=section_ants,
+                        moving=atlas_in_sec,
+                        type_of_transform="SyN",
+                        syn_metric="mattes",   # mutual information — cross-modality safe
+                        outprefix=_os.path.join(_tmp, "syn_"),
+                        verbose=False,
+                    )
+                    # Copy transform files outside the temp dir so they persist
+                    import shutil
+                    _syn_dir = tempfile.mkdtemp(prefix="ants_syn_")
+                    syn_fwd = [shutil.copy(t, _syn_dir) for t in syn["fwdtransforms"]]
+                    syn_inv = [shutil.copy(t, _syn_dir) for t in syn["invtransforms"]]
+                self._ants_syn_result = {"fwdtransforms": syn_fwd, "invtransforms": syn_inv}
+                self._tps_info.setText(
+                    f"ANTs Affine + SyN — {len(self._pairs)} pairs  |  "
+                    f"affine residual: {res:.2f} px")
+                self._set_status("ANTs Affine + SyN computed.")
+            else:
+                self._tps_info.setText(
+                    f"ANTs {transform_type} — {len(self._pairs)} pairs  |  "
+                    f"residual: {res:.2f} px")
+                self._set_status(f"ANTs {transform_type} transform computed.")
+        except Exception as e:
+            QMessageBox.critical(self, "ANTs error", str(e))
+            raise
+
+    def _compute_tps(self, atl_pts, sec_pts) -> None:
+        """Fit two independent TPS transforms from the landmark pairs."""
+        try:
+            # atlas → section  (used for image warp and residual)
+            self._tps_atl_to_sec = TPSTransform(src_pts=atl_pts, dst_pts=sec_pts)
+            # section → atlas  (used for cell mapping and image warp)
+            self._tps_sec_to_atl = TPSTransform(src_pts=sec_pts, dst_pts=atl_pts)
+            # keep legacy names pointing to same objects
+            self._tps_fwd = self._tps_atl_to_sec
+            self._tps_inv = self._tps_sec_to_atl
+            self._transform_method = "tps"
+            pred = self._tps_atl_to_sec(atl_pts)
+            res  = float(np.sqrt(((pred - sec_pts)**2).sum(axis=1)).mean())
             self._tps_info.setText(
-                f"TPS fitted on {len(self._pairs)} pairs  |  residual: {res:.2f} px")
+                f"TPS — {len(self._pairs)} pairs  |  residual: {res:.2f} px")
             self._set_status("TPS computed.")
         except Exception as e:
             QMessageBox.critical(self, "TPS error", str(e))
 
     def _on_apply_tps(self) -> None:
-        if self._tps_inv is None:
-            QMessageBox.warning(self, "No TPS", "Compute TPS first."); return
+        if self._transform_method is None:
+            QMessageBox.warning(self, "No transform", "Compute transform first."); return
         if self._cell_pts_sec is None:
             QMessageBox.warning(self, "No cells", "Load cell CSV first."); return
         z_idx = self._z_spin.value()
-        self._cell_pts_atlas = self._tps_inv(self._cell_pts_sec)
-        pts_yx = self._cell_pts_atlas[:, ::-1]
-        if "cells_atlas" in self._viewer.layers:
-            self._viewer.layers["cells_atlas"].data = pts_yx
-        else:
-            self._viewer.add_points(pts_yx, name="cells_atlas", size=8,
-                                    face_color="red", border_color="white", opacity=0.8)
-        self._set_status(
-            f"{len(self._cell_pts_atlas)} cells mapped → rotated atlas slice space "
-            f"(z_rot = {z_idx}).")
+        try:
+            if self._transform_method == "ants":
+                ants = _try_import_ants()
+                if self._ants_syn_result is not None:
+                    # Two-step: SyN inv (section→atlas_in_sec) then affine pull (→atlas)
+                    import pandas as pd
+                    pts_df = pd.DataFrame(
+                        self._cell_pts_sec, columns=["x", "y"])  # x=col, y=row physical
+                    mid_df = ants.apply_transforms_to_points(
+                        2, pts_df, self._ants_syn_result["invtransforms"])
+                    mid = mid_df[["x", "y"]].to_numpy()  # still x=col, y=row
+                    # affine_tx_fwd pull: pass (row,col) → get (row_atl,col_atl)
+                    mapped = np.array([
+                        self._ants_tx_fwd.apply_to_point([m[1], m[0]])
+                        for m in mid
+                    ])
+                    self._cell_pts_atlas = mapped[:, ::-1]  # (row,col) → (x,y)
+                else:
+                    # Affine / SyN: tx_fwd pull maps section→atlas
+                    mapped = np.array([
+                        self._ants_tx_fwd.apply_to_point([p[1], p[0]])
+                        for p in self._cell_pts_sec
+                    ])
+                    self._cell_pts_atlas = mapped[:, ::-1]  # (row,col) → (x,y)
+            else:
+                self._cell_pts_atlas = self._tps_sec_to_atl(self._cell_pts_sec)
+
+            pts_yx = self._cell_pts_atlas[:, ::-1]
+            if "cells_atlas" in self._viewer.layers:
+                self._viewer.layers["cells_atlas"].data = pts_yx
+            else:
+                self._viewer.add_points(pts_yx, name="cells_atlas", size=8,
+                                        face_color="red", border_color="white", opacity=0.8)
+            self._set_status(
+                f"{len(self._cell_pts_atlas)} cells → atlas slice space  "
+                f"(z_rot={z_idx}, method={self._transform_method})")
+        except Exception as e:
+            QMessageBox.critical(self, "Apply error", str(e))
 
     # ============================================================ Warp visualisation
 
-    # =========================================================================
-    # TODO: Image warp visualisation is currently under review.
-    #
-    # Known issue: warp output appears incorrect (partially/fully black or
-    # misaligned) for some landmark configurations and image sizes.
-    #
-    # Suspected causes to investigate:
-    #   1. Coordinate axis convention mismatch between skimage.warp (row=y, col=x)
-    #      and the TPS which was fitted in (x, y) order.
-    #   2. Downsampling of the output grid — coordinates are scaled to full section
-    #      space but there may be an off-by-one or aspect-ratio error.
-    #   3. TPS extrapolation outside the convex hull of landmarks producing garbage
-    #      values that skimage clips to 0.
-    #
-    # The cell coordinate mapping (_on_apply_tps) is NOT affected — it calls the
-    # TPS directly on the cell points without any image warping.
-    # =========================================================================
-
     def _on_warp_atlas_to_section(self) -> None:
-        """Warp atlas slice into section space and display in second window."""
-        if self._tps_fwd is None:
-            QMessageBox.warning(self, "No TPS", "Compute TPS first."); return
+        """Warp atlas slice → section space. Uses ANTs if available, TPS fallback."""
+        if self._transform_method is None:
+            QMessageBox.warning(self, "No transform", "Compute transform first."); return
         if self._atlas_slice_arr is None:
-            QMessageBox.warning(self, "No atlas slice",
-                "Save Phase 1 first (exports the atlas slice)."); return
+            QMessageBox.warning(self, "No atlas slice", "Save Phase 1 first."); return
         if self._section_arr is None:
             QMessageBox.warning(self, "No section", "Load section image first."); return
         try:
-            atlas_sl = self._atlas_slice_arr
-            out_shape = self._section_arr.shape[:2]
-
-            # Reduce output to max 2048px for speed — TPS at full section size is very slow
-            MAX_PX = 2048
-            scale       = min(1.0, MAX_PX / max(out_shape))
-            small_shape = (max(1, int(out_shape[0]*scale)),
-                           max(1, int(out_shape[1]*scale)))
-            scale_h = out_shape[0] / small_shape[0]
-            scale_w = out_shape[1] / small_shape[1]
-
-            def _inv_map_atl2sec(coords):
-                # coords: (2, small_rows, small_cols) — output grid in downsampled space
-                # Scale up to full section pixel space before applying TPS
-                spatial = coords.shape[1:]
-                y_full  = coords[0].ravel() * scale_h   # → full section row coords
-                x_full  = coords[1].ravel() * scale_w   # → full section col coords
-                pts_xy  = np.column_stack([x_full, y_full])  # (N,2) x,y in section space
-                src_xy  = self._tps_inv(pts_xy)              # → rotated atlas pixel coords
-                result  = np.empty_like(coords)
-                result[0] = src_xy[:, 1].reshape(spatial)    # y in atlas slice
-                result[1] = src_xy[:, 0].reshape(spatial)    # x in atlas slice
-                return result
-
-            # Sample from full-resolution atlas slice, output at small_shape
-            warped_small = sk_warp(atlas_sl.astype(np.float32),
-                                   _inv_map_atl2sec, output_shape=small_shape,
-                                   order=1, preserve_range=True, cval=0)
-            # Upsample back to section size for display
-            if scale < 1.0:
-                from skimage.transform import resize as sk_resize
-                warped = sk_resize(warped_small, out_shape,
-                                   preserve_range=True, anti_aliasing=False)
+            if self._transform_method == "ants":
+                ants = _try_import_ants()
+                atlas_ants, section_ants = self._ants_imgs
+                if self._ants_syn_result is not None:
+                    atlas_in_sec = ants.apply_ants_transform_to_image(
+                        self._ants_tx_fwd, atlas_ants, section_ants, interpolation="linear")
+                    atlas_in_sec_ants = ants.from_numpy(atlas_in_sec.numpy())
+                    warped_ants = ants.apply_transforms(
+                        fixed=section_ants, moving=atlas_in_sec_ants,
+                        transformlist=self._ants_syn_result["fwdtransforms"],
+                        interpolator="linear",
+                    )
+                else:
+                    warped_ants = ants.apply_ants_transform_to_image(
+                        self._ants_tx_fwd, atlas_ants, section_ants, interpolation="linear")
+                # ANTs only warps primary channel
+                warped_channels = {"primary": warped_ants.numpy().astype(np.float32)}
             else:
-                warped = warped_small
-            self._atlas_warped_arr = warped.astype(np.float32)
+                # TPS: warp every atlas channel into section space
+                out_shape = self._section_arr.shape[:2]
+                tps       = self._tps_sec_to_atl
+
+                def _inv_map(coords):
+                    return tps(coords)
+
+                channels = self._atlas_slice_all if self._atlas_slice_all else \
+                           {"primary": self._atlas_slice_arr}
+
+                warped_channels = {}
+                for ch_name, ch_sl in channels.items():
+                    warped_channels[ch_name] = sk_warp(
+                        ch_sl.astype(np.float32), _inv_map,
+                        output_shape=out_shape, order=1,
+                        mode='constant', preserve_range=True, cval=0
+                    ).astype(np.float32)
+
+            # Primary channel stored for save-session
+            self._atlas_warped_arr = warped_channels[list(warped_channels.keys())[0]]
 
             if self._second_viewer is None:
                 QMessageBox.warning(self, "No second viewer",
                     "Load section image first."); return
-            if "atlas_warped" in self._second_viewer.layers:
-                self._second_viewer.layers["atlas_warped"].data = self._atlas_warped_arr
-            else:
-                self._second_viewer.add_image(
-                    self._atlas_warped_arr, name="atlas_warped",
-                    colormap="green", blending="additive", opacity=0.5)
-            self._set_status("Atlas warped → section space (green layer in second window).")
+
+            # Display all warped channels in the section viewer
+            colormaps = ["green", "cyan", "magenta", "yellow", "red", "blue"]
+            for i, (ch_name, ch_warped) in enumerate(warped_channels.items()):
+                lname = f"atlas_warped_{ch_name}"
+                cmap  = colormaps[i % len(colormaps)]
+                if lname in self._second_viewer.layers:
+                    self._second_viewer.layers[lname].data = ch_warped
+                else:
+                    self._second_viewer.add_image(
+                        ch_warped, name=lname,
+                        colormap=cmap, blending="additive", opacity=0.5)
+
+            n_ch = len(warped_channels)
+            self._set_status(f"Atlas warped → section space ({n_ch} channel(s), second window).")
         except Exception as e:
             QMessageBox.critical(self, "Warp error", str(e))
 
     def _on_atl_overlay_toggled(self, checked: bool) -> None:
-        if self._second_viewer and "atlas_warped" in self._second_viewer.layers:
-            self._second_viewer.layers["atlas_warped"].visible = checked
+        if self._second_viewer:
+            for layer in self._second_viewer.layers:
+                if layer.name.startswith("atlas_warped"):
+                    layer.visible = checked
 
     def _on_warp_section_to_atlas(self) -> None:
-        """Warp section image into atlas slice space and display in main window."""
-        if self._tps_inv is None:
-            QMessageBox.warning(self, "No TPS", "Compute TPS first."); return
+        """Warp section image → atlas space. Uses ANTs if available, TPS fallback."""
+        if self._transform_method is None:
+            QMessageBox.warning(self, "No transform", "Compute transform first."); return
         if self._section_arr is None:
             QMessageBox.warning(self, "No section", "Load section image first."); return
         if self._atlas_slice_arr is None:
-            QMessageBox.warning(self, "No atlas slice",
-                "Save Phase 1 first."); return
+            QMessageBox.warning(self, "No atlas slice", "Save Phase 1 first."); return
         try:
-            out_shape = self._atlas_slice_arr.shape[:2]
+            if self._transform_method == "ants":
+                ants = _try_import_ants()
+                atlas_ants, section_ants = self._ants_imgs
+                if self._ants_syn_result is not None:
+                    # Affine + SyN: apply SyN inv first, then affine inv
+                    warped_ants = ants.apply_transforms(
+                        fixed=atlas_ants, moving=section_ants,
+                        transformlist=self._ants_syn_result["invtransforms"],
+                        interpolator="linear",
+                    )
+                    # Now in atlas_in_sec space; apply affine inv → atlas space
+                    warped_ants2 = ants.apply_ants_transform_to_image(
+                        self._ants_tx_inv, warped_ants, atlas_ants, interpolation="linear")
+                    warped = warped_ants2.numpy().astype(np.float32)
+                else:
+                    warped_ants = ants.apply_ants_transform_to_image(
+                        self._ants_tx_inv, section_ants, atlas_ants, interpolation="linear")
+                    warped = warped_ants.numpy().astype(np.float32)
+            else:
+                # TPS: sk_warp (skimage ≥0.19) passes coords as (N,2) [row,col] per pixel.
+                out_shape = self._atlas_slice_arr.shape[:2]
+                sec_img   = self._section_arr.astype(np.float32)
+                tps       = self._tps_atl_to_sec   # atlas → section
 
-            # Atlas output is typically small (e.g. 528×456) — no downsampling needed.
-            # For each atlas pixel, _tps_fwd maps → section coords; sample from section_arr.
-            def _inv_map_sec2atl(coords):
-                # coords: (2, atlas_rows, atlas_cols) — output grid in atlas space
-                spatial = coords.shape[1:]
-                y_flat  = coords[0].ravel()                   # atlas row coords (y)
-                x_flat  = coords[1].ravel()                   # atlas col coords (x)
-                pts_xy  = np.column_stack([x_flat, y_flat])   # (N,2) in atlas pixel space
-                src_xy  = self._tps_fwd(pts_xy)               # → section pixel coords
-                result  = np.empty_like(coords)
-                result[0] = src_xy[:, 1].reshape(spatial)     # y in section
-                result[1] = src_xy[:, 0].reshape(spatial)     # x in section
-                return result
+                def _inv_map(coords):
+                    # sk_warp passes (col, row) = (x, y); TPS also uses (x, y)
+                    # Return (col_src, row_src) same convention
+                    return tps(coords)   # atlas(x,y) → section(x,y)
 
-            warped = sk_warp(self._section_arr.astype(np.float32),
-                             _inv_map_sec2atl, output_shape=out_shape,
-                             order=1, preserve_range=True, cval=0)
-            self._section_warped_arr = warped.astype(np.float32)
+                warped = sk_warp(sec_img, _inv_map,
+                                 output_shape=out_shape, order=1, mode='constant',
+                                 preserve_range=True, cval=0).astype(np.float32)
+
+            self._section_warped_arr = warped
 
             if "section_warped" in self._viewer.layers:
                 self._viewer.layers["section_warped"].data = self._section_warped_arr
@@ -946,10 +1110,10 @@ class AtlasRegistrationWidget(QWidget):
     def _on_save_session(self) -> None:
         if not self._pairs:
             QMessageBox.warning(self, "No landmarks", "Add landmark pairs first."); return
-        if self._tps_inv is None:
-            QMessageBox.warning(self, "No TPS", "Compute TPS first."); return
+        if self._transform_method is None:
+            QMessageBox.warning(self, "No transform", "Compute transform first."); return
         if self._cell_pts_atlas is None:
-            QMessageBox.warning(self, "Not applied", "Apply TPS to cells first."); return
+            QMessageBox.warning(self, "Not applied", "Apply transform to cells first."); return
 
         out_dir = QFileDialog.getExistingDirectory(self, "Select output folder")
         if not out_dir: return
