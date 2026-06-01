@@ -47,9 +47,34 @@ def _load_image_any(path):
 
 
 def _collapse_to_2d(arr):
+    """Return a 2-D float32 array from any image shape.
+
+    Handles:
+      (H, W)          — already 2D, pass through
+      (H, W, C)       — channel-last (RGB/RGBA/multi-channel): luminance-weight to grayscale
+      (T, H, W)       — time/z stack: take first frame
+      (T, H, W, C)    — time + channel: first frame then grayscale
+      (1, H, W, 1)    — squeeze unit axes first
+    """
+    arr = np.squeeze(arr)          # remove any size-1 axes
+    if arr.ndim == 2:
+        return arr.astype(np.float32)
+    if arr.ndim == 3:
+        # Distinguish (H, W, C) from (T, H, W) by checking if last dim is small
+        if arr.shape[-1] <= 4:    # channel-last: C = 1, 2, 3, or 4
+            if arr.shape[-1] == 1:
+                return arr[..., 0].astype(np.float32)
+            # RGB/RGBA → luminance (ITU-R BT.601 for first 3 channels)
+            weights = np.array([0.299, 0.587, 0.114, 0.0], dtype=np.float32)
+            w = weights[:arr.shape[-1]].copy()
+            w /= w.sum() if w.sum() > 0 else 1.0
+            return (arr.astype(np.float32) * w).sum(axis=-1)
+        else:                     # (T, H, W): take first frame
+            return arr[0].astype(np.float32)
+    # 4-D or higher after squeeze: drop leading axes until 2D
     while arr.ndim > 2:
         arr = arr[0]
-    return arr
+    return arr.astype(np.float32)
 
 
 def _collapse_to_3d(arr):

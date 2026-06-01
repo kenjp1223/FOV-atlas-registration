@@ -70,10 +70,20 @@ side-by-side comparison. Landmark pairs are placed sequentially (click FOV →
 click section → row added to table). The rigid transform is fitted by
 least-squares and applied to all cell coordinates.
 
+**FOV image source (choose one):**
+- **Image file** (default): tif, png, jpg, czi, nd2.
+- **suite2p .npy**: loads `refImg` from `reg_outputs.npy` or `ops.npy` (falls back to `meanImg`).
+
 **Cell input (choose one):**
-- **suite2p** (default): load `stat.npy`; `iscell.npy` auto-detected in same
-  folder. Cell ROI masks shown as a Labels layer on the FOV.
+- **suite2p** (default): load `stat.npy`; `iscell.npy` auto-detected in the same
+  folder or loaded explicitly. Cell ROI masks shown as a Labels layer on the FOV.
 - **CSV**: uncheck the toggle and load a CSV with `x` and `y` columns.
+
+**FOV display orientation:**
+Use the ↺ / ↻ rotate and ⇔ / ⇕ flip buttons to rotate or flip the FOV display
+so it visually matches the section — makes it much easier to identify corresponding
+landmarks. All landmark and cell coordinates are stored in the original image space;
+the display transform is purely visual.
 
 ```
 T_rigid[FOV → Section]

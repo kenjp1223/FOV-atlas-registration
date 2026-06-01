@@ -117,7 +117,15 @@ class FOVAlignmentWidget(QWidget):
         self._section_arr  = None
         self._cell_pts_fov = None
         self._cell_df      = None
+        self._stat_raw     = None   # full stat array (all ROIs, unfiltered)
         self._cell_stat    = None   # suite2p stat array (filtered cells)
+        self._iscell       = None   # raw iscell array (n_rois, 2)
+
+        # FOV display orientation (never touches stored coordinates)
+        self._fov_arr_orig     = None   # raw loaded FOV array, never modified
+        self._fov_display_k    = 0      # np.rot90 k: 0=0°, 1=90°CCW, 2=180°, 3=270°CCW
+        self._fov_display_flip_h = False
+        self._fov_display_flip_v = False
         self._transform_M  = None
         self._second_viewer = None
 
@@ -148,6 +156,7 @@ class FOVAlignmentWidget(QWidget):
         layout.setAlignment(Qt.AlignTop)
         self.setLayout(layout)
         layout.addWidget(self._build_load_group())
+        layout.addWidget(self._build_display_group())
         layout.addWidget(self._build_landmark_group())
         layout.addWidget(self._build_transform_group())
         layout.addWidget(self._build_export_group())
@@ -159,9 +168,33 @@ class FOVAlignmentWidget(QWidget):
         box = QGroupBox("Load")
         layout = QVBoxLayout(box)
 
-        btn_fov = QPushButton("Load FOV image…")
-        btn_fov.clicked.connect(self._on_load_fov)
-        layout.addWidget(btn_fov)
+        # ── FOV source ────────────────────────────────────────────────────
+        from qtpy.QtWidgets import QButtonGroup, QRadioButton
+        fov_src_label = QLabel("FOV image source:")
+        fov_src_label.setStyleSheet("font-weight: bold;")
+        layout.addWidget(fov_src_label)
+
+        self._radio_fov_image  = QRadioButton("Image file  (tif / png / jpg / czi / nd2)")
+        self._radio_fov_suite2p = QRadioButton("suite2p .npy  (reg_outputs.npy  or  ops.npy  → meanImg)")
+        self._radio_fov_image.setChecked(True)
+
+        self._fov_radio_group = QButtonGroup(self)
+        self._fov_radio_group.addButton(self._radio_fov_image,   0)
+        self._fov_radio_group.addButton(self._radio_fov_suite2p, 1)
+        self._fov_radio_group.buttonClicked.connect(self._on_fov_source_toggled)
+
+        layout.addWidget(self._radio_fov_image)
+        layout.addWidget(self._radio_fov_suite2p)
+
+        self._btn_fov_image = QPushButton("Load FOV image…")
+        self._btn_fov_image.clicked.connect(self._on_load_fov)
+        layout.addWidget(self._btn_fov_image)
+
+        self._btn_fov_suite2p = QPushButton("Load reg_outputs.npy / ops.npy…")
+        self._btn_fov_suite2p.clicked.connect(self._on_load_suite2p_npy)
+        self._btn_fov_suite2p.setVisible(False)
+        layout.addWidget(self._btn_fov_suite2p)
+        # ─────────────────────────────────────────────────────────────────
 
         # ── suite2p / CSV toggle ──────────────────────────────────────────
         self._chk_suite2p = QCheckBox("Load cells from suite2p stat.npy")
@@ -169,10 +202,19 @@ class FOVAlignmentWidget(QWidget):
         self._chk_suite2p.toggled.connect(self._on_suite2p_toggled)
         layout.addWidget(self._chk_suite2p)
 
-        # suite2p button (shown when checkbox is ON)
+        # suite2p buttons (shown when checkbox is ON)
         self._btn_statnpy = QPushButton("Load stat.npy…")
         self._btn_statnpy.clicked.connect(self._on_load_statnpy)
         layout.addWidget(self._btn_statnpy)
+
+        self._btn_iscell = QPushButton("Load iscell.npy…")
+        self._btn_iscell.clicked.connect(self._on_load_iscell)
+        layout.addWidget(self._btn_iscell)
+
+        self._iscell_info = QLabel("iscell.npy: not loaded")
+        self._iscell_info.setWordWrap(True)
+        self._iscell_info.setStyleSheet("font-size: 10px; color: #888;")
+        layout.addWidget(self._iscell_info)
 
         # CSV button (shown when checkbox is OFF)
         self._btn_csv = QPushButton("Load cell CSV (x, y)…")
@@ -189,6 +231,177 @@ class FOVAlignmentWidget(QWidget):
         self._load_info.setWordWrap(True)
         layout.addWidget(self._load_info)
         return box
+
+    def _build_display_group(self) -> QGroupBox:
+        box = QGroupBox("FOV Display Orientation")
+        layout = QVBoxLayout(box)
+
+        note = QLabel(
+            "Rotate/flip the FOV display to match the section for easier landmarking.\n"
+            "All coordinates are always stored in the original image space."
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet("font-size: 10px; color: #888;")
+        layout.addWidget(note)
+
+        row1 = QHBoxLayout()
+        btn_ccw = QPushButton("↺ Rotate CCW")
+        btn_cw  = QPushButton("↻ Rotate CW")
+        btn_ccw.clicked.connect(self._on_rotate_ccw)
+        btn_cw.clicked.connect(self._on_rotate_cw)
+        row1.addWidget(btn_ccw)
+        row1.addWidget(btn_cw)
+        layout.addLayout(row1)
+
+        row2 = QHBoxLayout()
+        btn_fh = QPushButton("⇔ Flip H")
+        btn_fv = QPushButton("⇕ Flip V")
+        btn_fh.clicked.connect(self._on_flip_h)
+        btn_fv.clicked.connect(self._on_flip_v)
+        row2.addWidget(btn_fh)
+        row2.addWidget(btn_fv)
+        layout.addLayout(row2)
+
+        btn_reset = QPushButton("Reset orientation")
+        btn_reset.clicked.connect(self._on_reset_display)
+        layout.addWidget(btn_reset)
+
+        self._orient_info = QLabel("Orientation: 0° | No flip")
+        self._orient_info.setStyleSheet("font-size: 10px; color: #555;")
+        layout.addWidget(self._orient_info)
+        return box
+
+    # ------------------------------------------------------------------
+    # Display orientation controls
+    # ------------------------------------------------------------------
+
+    def _on_rotate_cw(self)  -> None:
+        self._fov_display_k = (self._fov_display_k - 1) % 4
+        self._refresh_fov_display()
+
+    def _on_rotate_ccw(self) -> None:
+        self._fov_display_k = (self._fov_display_k + 1) % 4
+        self._refresh_fov_display()
+
+    def _on_flip_h(self) -> None:
+        self._fov_display_flip_h = not self._fov_display_flip_h
+        self._refresh_fov_display()
+
+    def _on_flip_v(self) -> None:
+        self._fov_display_flip_v = not self._fov_display_flip_v
+        self._refresh_fov_display()
+
+    def _on_reset_display(self) -> None:
+        self._fov_display_k     = 0
+        self._fov_display_flip_h = False
+        self._fov_display_flip_v = False
+        self._refresh_fov_display()
+
+    def _refresh_fov_display(self) -> None:
+        """Re-render FOV layer, cell points, and masks with current display transform."""
+        if self._fov_arr_orig is None:
+            return
+
+        # Update orientation label
+        rot_label = {0: "0°", 1: "90° CCW", 2: "180°", 3: "270° CCW"}
+        flips = []
+        if self._fov_display_flip_h: flips.append("Flip H")
+        if self._fov_display_flip_v: flips.append("Flip V")
+        self._orient_info.setText(
+            f"Orientation: {rot_label[self._fov_display_k]} | "
+            f"{' | '.join(flips) if flips else 'No flip'}"
+        )
+
+        arr = self._apply_display_transform(self._fov_arr_orig)
+        if "fov" in self._viewer.layers:
+            self._viewer.layers["fov"].data = arr
+        else:
+            self._viewer.add_image(arr, name="fov", colormap="gray")
+
+        # Cell centroids — kept in original space; transform for display
+        if self._cell_pts_fov is not None:
+            yx_orig = self._cell_pts_fov[:, ::-1]          # xy→yx original
+            yx_disp = self._transform_yx_for_display(yx_orig)
+            if "cells_fov" in self._viewer.layers:
+                self._viewer.layers["cells_fov"].data = yx_disp
+
+        # Cell masks
+        if self._cell_stat is not None:
+            self._show_stat_masks(self._cell_stat)
+
+        # Landmarks (stored in original space; transform for display)
+        self._refresh_lm_layers()
+
+    # ------------------------------------------------------------------
+    # Display transform math
+    # ------------------------------------------------------------------
+
+    def _apply_display_transform(self, arr: np.ndarray) -> np.ndarray:
+        """Apply current rotation + flips to an image array."""
+        arr = np.rot90(arr, self._fov_display_k)
+        if self._fov_display_flip_h:
+            arr = np.fliplr(arr)
+        if self._fov_display_flip_v:
+            arr = np.flipud(arr)
+        return arr
+
+    def _transform_yx_for_display(self, yx: np.ndarray) -> np.ndarray:
+        """Map (N,2) yx coordinates from original FOV space → display space."""
+        if self._fov_arr_orig is None or len(yx) == 0:
+            return yx
+        H, W = self._fov_arr_orig.shape[:2]
+        y = yx[:, 0].astype(float).copy()
+        x = yx[:, 1].astype(float).copy()
+
+        k = self._fov_display_k
+        if k == 1:          # 90° CCW: y'=W-1-x, x'=y  → shape (W,H)
+            y, x = W - 1 - x, y.copy()
+            H, W = W, H
+        elif k == 2:        # 180°:   y'=H-1-y, x'=W-1-x
+            y, x = H - 1 - y, W - 1 - x
+        elif k == 3:        # 90° CW: y'=x, x'=H-1-y   → shape (W,H)
+            y, x = x.copy(), H - 1 - y
+            H, W = W, H
+
+        if self._fov_display_flip_h:
+            x = W - 1 - x
+        if self._fov_display_flip_v:
+            y = H - 1 - y
+
+        return np.stack([y, x], axis=1)
+
+    def _inverse_transform_yx(self, y: float, x: float) -> tuple[float, float]:
+        """Map a single (y, x) click from display space → original FOV space.
+
+        Uses numpy's own inverse operations on an indicator pixel — correct
+        by construction regardless of rotation/flip combination.
+        """
+        if self._fov_arr_orig is None:
+            return y, x
+
+        disp = self._apply_display_transform(
+            np.zeros(self._fov_arr_orig.shape[:2], dtype=np.uint8))
+        disp_H, disp_W = disp.shape
+
+        yi = int(np.clip(round(y), 0, disp_H - 1))
+        xi = int(np.clip(round(x), 0, disp_W - 1))
+
+        # Plant a marker and apply the exact inverse of the display transform
+        tmp = np.zeros((disp_H, disp_W), dtype=np.uint8)
+        tmp[yi, xi] = 1
+
+        # Inverse order: undo flips first, then undo rotation
+        if self._fov_display_flip_v:
+            tmp = np.flipud(tmp)
+        if self._fov_display_flip_h:
+            tmp = np.fliplr(tmp)
+        if self._fov_display_k != 0:
+            tmp = np.rot90(tmp, 4 - self._fov_display_k)
+
+        pos = np.argwhere(tmp == 1)
+        if len(pos) == 0:
+            return y, x
+        return float(pos[0][0]), float(pos[0][1])
 
     def _build_landmark_group(self) -> QGroupBox:
         box = QGroupBox("Landmark pairs")
@@ -272,6 +485,68 @@ class FOVAlignmentWidget(QWidget):
     # Load
     # ------------------------------------------------------------------
 
+    def _on_fov_source_toggled(self, btn=None) -> None:
+        suite2p_mode = self._radio_fov_suite2p.isChecked()
+        self._btn_fov_image.setVisible(not suite2p_mode)
+        self._btn_fov_suite2p.setVisible(suite2p_mode)
+
+    def _on_load_suite2p_npy(self) -> None:
+        """Load FOV image from a suite2p .npy dict (reg_outputs.npy or ops.npy).
+
+        Scans for image-like keys and lets the user pick which one to display.
+        Candidate keys in priority order:
+          meanImg_chan2  — anatomical/structural channel (best for atlas alignment)
+          meanImg        — functional channel mean
+          meanImgE       — contrast-enhanced mean
+          refImg         — registration reference frame
+        """
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Load suite2p .npy (reg_outputs or ops)", "",
+            "NumPy (*.npy);;All files (*)"
+        )
+        if not path:
+            return
+        try:
+            data = np.load(path, allow_pickle=True).item()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Could not load {Path(path).name}:\n{e}")
+            return
+
+        # Always use refImg; fall back to meanImg if absent
+        FALLBACK_KEYS = ["refImg", "meanImg"]
+        key_used = next((k for k in FALLBACK_KEYS if k in data and
+                         hasattr(data[k], "shape") and data[k].ndim == 2), None)
+        if key_used is None:
+            QMessageBox.critical(
+                self, "No image found",
+                f"{Path(path).name} contains neither 'meanImg' nor 'refImg'.\n"
+                f"Found keys: {list(data.keys())}"
+            )
+            return
+
+        arr = data[key_used].astype(np.float32)
+        try:
+            self._fov_path = Path(path)
+            self._fov_arr_orig = arr
+            self._fov_display_k = 0
+            self._fov_display_flip_h = False
+            self._fov_display_flip_v = False
+            if "fov" in self._viewer.layers:
+                self._viewer.layers["fov"].data = arr
+            else:
+                self._viewer.add_image(arr, name="fov", colormap="gray")
+            self._viewer.reset_view()
+            self._update_load_info()
+            self._update_pair_btn_state()
+            if self._cell_stat is not None:
+                self._show_stat_masks(self._cell_stat)
+            self._set_status(
+                f"FOV loaded from {Path(path).name} [{key_used}]  "
+                f"{arr.shape[1]}×{arr.shape[0]} px"
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "Error", str(e))
+
     def _on_load_fov(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self, "Load FOV image", "",
@@ -282,6 +557,10 @@ class FOVAlignmentWidget(QWidget):
         try:
             arr = _collapse_to_2d(_load_image_any(path))
             self._fov_path = Path(path)
+            self._fov_arr_orig = arr
+            self._fov_display_k = 0
+            self._fov_display_flip_h = False
+            self._fov_display_flip_v = False
             if "fov" in self._viewer.layers:
                 self._viewer.layers["fov"].data = arr
             else:
@@ -289,7 +568,6 @@ class FOVAlignmentWidget(QWidget):
             self._viewer.reset_view()
             self._update_load_info()
             self._update_pair_btn_state()
-            # If stat.npy was loaded before the FOV image, paint masks now
             if self._cell_stat is not None:
                 self._show_stat_masks(self._cell_stat)
             self._set_status(f"FOV loaded: {self._fov_path.name}  {arr.shape[1]}×{arr.shape[0]} px")
@@ -298,13 +576,58 @@ class FOVAlignmentWidget(QWidget):
 
     def _on_suite2p_toggled(self, checked: bool) -> None:
         self._btn_statnpy.setVisible(checked)
+        self._btn_iscell.setVisible(checked)
+        self._iscell_info.setVisible(checked)
         self._btn_csv.setVisible(not checked)
+
+    def _on_load_iscell(self) -> None:
+        """Explicitly load an iscell.npy file.
+
+        If stat.npy is already loaded, immediately re-applies the filter
+        and refreshes the display.
+        """
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Load iscell.npy", "",
+            "NumPy (*.npy);;All files (*)"
+        )
+        if not path:
+            return
+        try:
+            iscell = np.load(path, allow_pickle=True)
+            if iscell.ndim != 2 or iscell.shape[1] < 1:
+                QMessageBox.critical(self, "Bad file",
+                    "iscell.npy must be shape (n_rois, 2).")
+                return
+            self._iscell = iscell
+            n_cells = int(iscell[:, 0].sum())
+            n_total = len(iscell)
+            self._iscell_info.setText(
+                f"iscell.npy: {n_cells} / {n_total} ROIs are cells"
+            )
+            self._iscell_info.setStyleSheet("font-size: 10px; color: #2a8a2a;")
+            self._set_status(f"iscell.npy loaded: {n_cells}/{n_total} cells")
+
+            # Re-apply filter if stat is already loaded
+            if self._stat_raw is not None:
+                if len(iscell) != len(self._stat_raw):
+                    QMessageBox.critical(
+                        self, "Size mismatch",
+                        f"iscell.npy has {len(iscell)} ROIs but stat.npy has "
+                        f"{len(self._stat_raw)} — they must be from the same suite2p run."
+                    )
+                    self._iscell = None
+                    self._iscell_info.setText("iscell.npy: size mismatch — not applied")
+                    self._iscell_info.setStyleSheet("font-size: 10px; color: #cc0000;")
+                    return
+                self._apply_stat_filter()
+        except Exception as e:
+            QMessageBox.critical(self, "Error loading iscell.npy", str(e))
 
     def _on_load_statnpy(self) -> None:
         """Load cell coordinates from a suite2p stat.npy file.
 
-        Looks for iscell.npy in the same folder automatically.
-        Preserves original row order from stat.npy (no resorting).
+        Uses iscell.npy if already loaded, otherwise auto-detects it in
+        the same folder. Preserves original row order (no resorting).
         Extracts med=[y,x] as the per-cell centroid coordinate.
         Displays cell ROI masks as a Labels layer if FOV image is loaded.
         """
@@ -315,50 +638,78 @@ class FOVAlignmentWidget(QWidget):
         if not path:
             return
         try:
-            import pandas as pd
-            stat = np.load(path, allow_pickle=True)
+            self._stat_raw = np.load(path, allow_pickle=True)
 
-            # Auto-detect iscell.npy in same directory
-            stat_dir = Path(path).parent
-            iscell_path = stat_dir / "iscell.npy"
-            if iscell_path.exists():
-                iscell = np.load(str(iscell_path), allow_pickle=True)
-                cell_mask = iscell[:, 0].astype(bool)
+            # Use explicitly loaded iscell, else auto-detect in same folder
+            if self._iscell is not None:
                 iscell_note = " (filtered by iscell.npy)"
             else:
-                cell_mask = np.ones(len(stat), dtype=bool)
-                iscell_note = ""
+                iscell_path = Path(path).parent / "iscell.npy"
+                if iscell_path.exists():
+                    self._iscell = np.load(str(iscell_path), allow_pickle=True)
+                    n_cells = int(self._iscell[:, 0].sum())
+                    n_total = len(self._iscell)
+                    self._iscell_info.setText(
+                        f"iscell.npy: {n_cells} / {n_total} ROIs are cells  (auto-detected)"
+                    )
+                    self._iscell_info.setStyleSheet("font-size: 10px; color: #2a8a2a;")
+                    iscell_note = " (filtered by iscell.npy, auto-detected)"
+                else:
+                    iscell_note = " (no iscell.npy — all ROIs kept)"
 
-            # Keep original indices — do NOT sort or reorder
-            original_indices = np.where(cell_mask)[0]
-            cells_stat = stat[cell_mask]
-
-            # med is [y, x]; convert to (x, y) for the pipeline
-            meds = np.array([s["med"] for s in cells_stat], dtype=float)  # (N, 2) [y, x]
-            self._cell_pts_fov = meds[:, ::-1]  # → (x, y)
-
-            # DataFrame carries stat_idx through the whole pipeline
-            self._cell_df = pd.DataFrame({"stat_idx": original_indices})
-            self._cell_stat = cells_stat
-
-            # Display centroids as Points (napari expects yx)
-            if "cells_fov" in self._viewer.layers:
-                self._viewer.layers["cells_fov"].data = meds
-            else:
-                self._viewer.add_points(
-                    meds, name="cells_fov", size=8,
-                    face_color="red", border_color="white", opacity=0.8
-                )
-
-            # Display ROI masks as Labels layer (requires FOV to be loaded)
-            self._show_stat_masks(cells_stat)
-
+            self._apply_stat_filter()
             self._update_load_info()
             self._set_status(
-                f"Loaded {len(cells_stat)} cells from {Path(path).name}{iscell_note}"
+                f"Loaded {len(self._cell_stat)} cells from {Path(path).name}{iscell_note}"
             )
         except Exception as e:
             QMessageBox.critical(self, "Error loading stat.npy", str(e))
+
+    def _apply_stat_filter(self) -> None:
+        """Filter stat_raw by iscell and refresh Points + Labels layers."""
+        import pandas as pd
+
+        stat = self._stat_raw
+        if self._iscell is not None:
+            if len(self._iscell) != len(stat):
+                QMessageBox.critical(
+                    self, "Size mismatch",
+                    f"stat.npy has {len(stat)} ROIs but iscell.npy has "
+                    f"{len(self._iscell)} — they must be from the same "
+                    f"suite2p run.\n\nProceeding without iscell filter."
+                )
+                self._iscell = None
+                self._iscell_info.setText(
+                    f"iscell.npy: size mismatch ({len(self._iscell) if self._iscell is not None else '?'} "
+                    f"vs {len(stat)}) — ignored"
+                )
+                self._iscell_info.setStyleSheet("font-size: 10px; color: #cc0000;")
+            cell_mask = self._iscell[:, 0].astype(bool) if self._iscell is not None else np.ones(len(stat), dtype=bool)
+        else:
+            cell_mask = np.ones(len(stat), dtype=bool)
+
+        # Keep original indices — do NOT sort or reorder
+        original_indices = np.where(cell_mask)[0]
+        cells_stat = stat[cell_mask]
+
+        # med is [y, x]; store in original space, display in transformed space
+        meds = np.array([s["med"] for s in cells_stat], dtype=float)  # (N,2) yx original
+        self._cell_pts_fov = meds[:, ::-1]  # (x, y) original — used for transform computation
+        self._cell_df = pd.DataFrame({"stat_idx": original_indices})
+        self._cell_stat = cells_stat
+
+        # Display in current display space
+        meds_disp = self._transform_yx_for_display(meds)
+        if "cells_fov" in self._viewer.layers:
+            self._viewer.layers["cells_fov"].data = meds_disp
+        else:
+            self._viewer.add_points(
+                meds_disp, name="cells_fov", size=8,
+                face_color="red", border_color="white", opacity=0.8
+            )
+
+        # Refresh Labels layer
+        self._show_stat_masks(cells_stat)
 
     def _show_stat_masks(self, cells_stat: np.ndarray) -> None:
         """Create/update a Labels layer with per-cell ROI masks.
@@ -371,7 +722,10 @@ class FOVAlignmentWidget(QWidget):
         except KeyError:
             return  # FOV not loaded yet; masks will be added after FOV loads
 
-        H, W = fov_layer.data.shape[:2]
+        # Build labels in original image space using original dimensions
+        if self._fov_arr_orig is None:
+            return
+        H, W = self._fov_arr_orig.shape[:2]
         labels = np.zeros((H, W), dtype=np.int32)
 
         for i, s in enumerate(cells_stat):
@@ -379,6 +733,9 @@ class FOVAlignmentWidget(QWidget):
             xpix = s["xpix"]
             valid = (ypix >= 0) & (ypix < H) & (xpix >= 0) & (xpix < W)
             labels[ypix[valid], xpix[valid]] = i + 1  # 1-based; 0 = background
+
+        # Apply display transform so masks align with the (possibly rotated) FOV
+        labels = self._apply_display_transform(labels)
 
         if "cell_masks" in self._viewer.layers:
             self._viewer.layers["cell_masks"].data = labels
@@ -499,7 +856,9 @@ class FOVAlignmentWidget(QWidget):
 
         # Index the new point directly — don't use [-1] which can be stale
         yx = self._fov_lm_layer.data[self._fov_n_before]
-        self._pending_fov_xy = [float(yx[1]), float(yx[0])]  # napari yx → xy
+        # Inverse-transform from display space → original FOV space
+        y_orig, x_orig = self._inverse_transform_yx(float(yx[0]), float(yx[1]))
+        self._pending_fov_xy = [x_orig, y_orig]  # store as xy in original space
 
         # Switch state → wait for section click
         self._pair_state = _WAIT_SEC
@@ -618,9 +977,18 @@ class FOVAlignmentWidget(QWidget):
             self._pair_status.setText(f"{len(self._pairs)} pair(s).")
 
     def _refresh_lm_layers(self) -> None:
-        """Rebuild the Points layers from self._pairs."""
-        fov_pts = np.array([[p["fov"][1], p["fov"][0]] for p in self._pairs]) if self._pairs else np.empty((0, 2))
-        sec_pts = np.array([[p["sec"][1], p["sec"][0]] for p in self._pairs]) if self._pairs else np.empty((0, 2))
+        """Rebuild the Points layers from self._pairs.
+
+        Pairs store FOV coordinates in ORIGINAL image space.
+        Transform to display space before painting on the (possibly rotated/flipped) layer.
+        """
+        if self._pairs:
+            yx_orig = np.array([[p["fov"][1], p["fov"][0]] for p in self._pairs])  # yx original
+            fov_pts = self._transform_yx_for_display(yx_orig)
+            sec_pts = np.array([[p["sec"][1], p["sec"][0]] for p in self._pairs])
+        else:
+            fov_pts = np.empty((0, 2))
+            sec_pts = np.empty((0, 2))
 
         if self._fov_lm_layer is not None and "fov_landmarks" in self._viewer.layers:
             self._fov_lm_layer.data = fov_pts
