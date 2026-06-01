@@ -62,7 +62,7 @@ Step 1.
 ## Step-by-step
 
 ### Step 1 — FOV → Section alignment
-> Widget: **1 — FOV Alignment**
+> **Plugins → Atlas Registration → 1 — FOV Alignment**
 
 Rigid alignment (translate / rotate / uniform scale) of the FOV image onto the
 full brain section. Both images open in independent napari windows for
@@ -83,7 +83,7 @@ Saves: landmarks.csv | transform.json | cells_section.csv
 ```
 
 ### Step 2 — Atlas rotation + Section alignment
-> Widget: **2 — Atlas Registration**
+> **Plugins → Atlas Registration → 2 — Atlas Registration**
 
 Two-phase widget. Both phases use the same window pair throughout:
 - **Main viewer** — rotating atlas slice (live oblique preview)
@@ -113,7 +113,7 @@ Saves: _settings.json | _landmarks.csv | _cells_atlas_slice.csv
 ```
 
 ### Step 3 — Region lookup + Bregma coordinates
-> Widget: **3 — Coordinate Readout**
+> **Plugins → Atlas Registration → 3 — Coordinate Readout**
 
 Loads the cells CSV (with `x_ccf, y_ccf, z_ccf`) and:
 
@@ -151,28 +151,51 @@ Saves: cells_final.csv  (first column: cell_id)
 
 ## Installation
 
-Requires [uv](https://docs.astral.sh/uv/).
+### Requirements
+
+- Python 3.10+
+- [uv](https://docs.astral.sh/uv/) — fast Python package manager
+
+Install `uv` if you don't have it:
 
 ```bash
-cd napari-atlas-registration
+pip install uv
+```
+
+### Clone and install
+
+```bash
+git clone https://github.com/kenjp1223/FOV-atlas-registration.git
+cd FOV-atlas-registration
 uv sync --dev
+```
+
+Optional image format support (install as needed):
+
+```bash
+uv sync --extra czi   # Zeiss CZI files
+uv sync --extra nd2   # Nikon ND2 files
+```
+
+### Launch napari
+
+```bash
 uv run napari
 ```
 
-Optional image format support:
+### Open the widgets
 
-```bash
-uv sync --extra czi   # Zeiss CZI
-uv sync --extra nd2   # Nikon ND2
-```
+In napari, go to **Plugins → Atlas Registration** and select the step you want:
 
-Open widgets from **Plugins → Atlas Registration**.
+- **1 — FOV Alignment**
+- **2 — Atlas Registration**
+- **3 — Coordinate Readout**
 
----
+Each widget can be docked in the napari window. Run them in order (Step 1 → 2 → 3).
 
-## CCF resources
+### CCF resource files
 
-Place the following files in a `CCF3/` folder at the project root
+Download the Allen CCFv3 files and place them in a `CCF3/` folder at the project root
 (already in `.gitignore` — files are too large to commit):
 
 ```
@@ -182,7 +205,7 @@ CCF3/
   template_25_coronal.tif     — (optional) anatomy reference
 ```
 
-Paths are configurable in the widget; the plugin defaults to `CCF3/`.
+Paths are configurable inside the widget; the plugin defaults to `CCF3/`.
 
 ---
 
