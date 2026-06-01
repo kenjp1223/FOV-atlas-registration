@@ -195,8 +195,9 @@ Each widget can be docked in the napari window. Run them in order (Step 1 → 2 
 
 ### CCF resource files
 
-Download the Allen CCFv3 files and place them in a `CCF3/` folder at the project root
-(already in `.gitignore` — files are too large to commit):
+Use the following link to download the Allen CCFv3 files and place them in a `CCF3/` folder at the project root
+https://drive.google.com/drive/folders/1AHzQ8sRubvUSm6bT7_oip5ZmQcuitV5g?usp=drive_link
+
 
 ```
 CCF3/
@@ -206,6 +207,12 @@ CCF3/
 ```
 
 Paths are configurable inside the widget; the plugin defaults to `CCF3/`.
+
+### Example files
+
+Use the following link to download example image files and cell coordinate files
+https://drive.google.com/drive/folders/1AHzQ8sRubvUSm6bT7_oip5ZmQcuitV5g?usp=drive_link
+
 
 ---
 
