@@ -214,6 +214,8 @@ Use the following link to download example image files and cell coordinate files
 https://drive.google.com/drive/folders/1AHzQ8sRubvUSm6bT7_oip5ZmQcuitV5g?usp=drive_link
 
 
+### Example usage of the GUI
+https://drive.google.com/file/d/1_LPuQGSKPJ9RbUii9mCrblbMt5Ii4FrB/view?usp=drive_link
 ---
 
 ## Coordinate conventions
