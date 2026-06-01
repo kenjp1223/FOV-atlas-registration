@@ -9,6 +9,7 @@ build/
 
 # Large atlas data — never commit
 CCF3/
+example/
 *.tif
 *.tiff
 *.nii
