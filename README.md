@@ -110,7 +110,6 @@ Saves: cells_final.csv
 | 1 — FOV Alignment | Rigid FOV→Section, sequential landmark pairs | ✅ Done |
 | 2 — Atlas Registration | Atlas rotation (Phase 1) + TPS alignment (Phase 2) | ✅ Done |
 | 3 — Coordinate Readout | CCF region lookup + AP/ML/DV mm | ✅ Done |
-| Image warp overlay | Atlas↔section image warp visualisation | ⚠ Under review |
 
 ---
 
