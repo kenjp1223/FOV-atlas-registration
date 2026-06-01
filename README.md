@@ -5,6 +5,8 @@ the way through to stereotaxic brain atlas coordinates (Allen CCFv3 / Paxinos-Fr
 
 Everything runs inside napari — no BigWarp, no Fiji, no external tools required.
 
+[![Demo video](https://drive.google.com/thumbnail?id=1_LPuQGSKPJ9RbUii9mCrblbMt5Ii4FrB&sz=w640)](https://drive.google.com/file/d/1_LPuQGSKPJ9RbUii9mCrblbMt5Ii4FrB/view?usp=drive_link)
+
 ---
 
 ## Pipeline overview
