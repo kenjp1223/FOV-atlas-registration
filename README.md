@@ -5,11 +5,11 @@ the way through to stereotaxic brain atlas coordinates (Allen CCFv3 / Paxinos-Fr
 
 Everything runs inside napari — no BigWarp, no Fiji, no external tools required.
 
-[![Demo video](https://drive.google.com/thumbnail?id=1_LPuQGSKPJ9RbUii9mCrblbMt5Ii4FrB&sz=w640)](https://drive.google.com/file/d/1_LPuQGSKPJ9RbUii9mCrblbMt5Ii4FrB/view?usp=drive_link)
-
 ---
 
 ## Pipeline overview
+
+![Pipeline schematic](pipeline.png)
 
 For **N cells** with pixel coordinates in FOV space, the plugin produces
 per-cell brain region labels and stereotaxic coordinates (AP / ML / DV mm
@@ -148,6 +148,12 @@ annotation[ap_idx, dv_idx, ml_idx]  →  region_id, acronym, name
 
 Saves: cells_final.csv  (first column: cell_id)
 ```
+
+---
+
+## Demo
+
+[▶ Watch demo video](https://drive.google.com/file/d/1_LPuQGSKPJ9RbUii9mCrblbMt5Ii4FrB/view?usp=drive_link)
 
 ---
 
