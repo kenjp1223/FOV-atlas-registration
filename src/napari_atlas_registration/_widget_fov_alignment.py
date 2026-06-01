@@ -28,7 +28,7 @@ import napari
 from pathlib import Path
 from qtpy.QtCore import Qt, QTimer
 from qtpy.QtWidgets import (
-    QFileDialog, QGroupBox, QHBoxLayout, QLabel,
+    QCheckBox, QFileDialog, QGroupBox, QHBoxLayout, QLabel,
     QMessageBox, QPushButton, QSizePolicy,
     QTableWidget, QTableWidgetItem, QHeaderView,
     QVBoxLayout, QWidget,
@@ -117,6 +117,7 @@ class FOVAlignmentWidget(QWidget):
         self._section_arr  = None
         self._cell_pts_fov = None
         self._cell_df      = None
+        self._cell_stat    = None   # suite2p stat array (filtered cells)
         self._transform_M  = None
         self._second_viewer = None
 
@@ -162,9 +163,23 @@ class FOVAlignmentWidget(QWidget):
         btn_fov.clicked.connect(self._on_load_fov)
         layout.addWidget(btn_fov)
 
-        btn_csv = QPushButton("Load cell CSV (x, y)…")
-        btn_csv.clicked.connect(self._on_load_csv)
-        layout.addWidget(btn_csv)
+        # ── suite2p / CSV toggle ──────────────────────────────────────────
+        self._chk_suite2p = QCheckBox("Load cells from suite2p stat.npy")
+        self._chk_suite2p.setChecked(True)
+        self._chk_suite2p.toggled.connect(self._on_suite2p_toggled)
+        layout.addWidget(self._chk_suite2p)
+
+        # suite2p button (shown when checkbox is ON)
+        self._btn_statnpy = QPushButton("Load stat.npy…")
+        self._btn_statnpy.clicked.connect(self._on_load_statnpy)
+        layout.addWidget(self._btn_statnpy)
+
+        # CSV button (shown when checkbox is OFF)
+        self._btn_csv = QPushButton("Load cell CSV (x, y)…")
+        self._btn_csv.clicked.connect(self._on_load_csv)
+        self._btn_csv.setVisible(False)
+        layout.addWidget(self._btn_csv)
+        # ─────────────────────────────────────────────────────────────────
 
         btn_sec = QPushButton("Load section image…")
         btn_sec.clicked.connect(self._on_load_section)
@@ -274,9 +289,101 @@ class FOVAlignmentWidget(QWidget):
             self._viewer.reset_view()
             self._update_load_info()
             self._update_pair_btn_state()
+            # If stat.npy was loaded before the FOV image, paint masks now
+            if self._cell_stat is not None:
+                self._show_stat_masks(self._cell_stat)
             self._set_status(f"FOV loaded: {self._fov_path.name}  {arr.shape[1]}×{arr.shape[0]} px")
         except Exception as e:
             QMessageBox.critical(self, "Error", str(e))
+
+    def _on_suite2p_toggled(self, checked: bool) -> None:
+        self._btn_statnpy.setVisible(checked)
+        self._btn_csv.setVisible(not checked)
+
+    def _on_load_statnpy(self) -> None:
+        """Load cell coordinates from a suite2p stat.npy file.
+
+        Looks for iscell.npy in the same folder automatically.
+        Preserves original row order from stat.npy (no resorting).
+        Extracts med=[y,x] as the per-cell centroid coordinate.
+        Displays cell ROI masks as a Labels layer if FOV image is loaded.
+        """
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Load suite2p stat.npy", "",
+            "NumPy (*.npy);;All files (*)"
+        )
+        if not path:
+            return
+        try:
+            import pandas as pd
+            stat = np.load(path, allow_pickle=True)
+
+            # Auto-detect iscell.npy in same directory
+            stat_dir = Path(path).parent
+            iscell_path = stat_dir / "iscell.npy"
+            if iscell_path.exists():
+                iscell = np.load(str(iscell_path), allow_pickle=True)
+                cell_mask = iscell[:, 0].astype(bool)
+                iscell_note = " (filtered by iscell.npy)"
+            else:
+                cell_mask = np.ones(len(stat), dtype=bool)
+                iscell_note = ""
+
+            # Keep original indices — do NOT sort or reorder
+            original_indices = np.where(cell_mask)[0]
+            cells_stat = stat[cell_mask]
+
+            # med is [y, x]; convert to (x, y) for the pipeline
+            meds = np.array([s["med"] for s in cells_stat], dtype=float)  # (N, 2) [y, x]
+            self._cell_pts_fov = meds[:, ::-1]  # → (x, y)
+
+            # DataFrame carries stat_idx through the whole pipeline
+            self._cell_df = pd.DataFrame({"stat_idx": original_indices})
+            self._cell_stat = cells_stat
+
+            # Display centroids as Points (napari expects yx)
+            if "cells_fov" in self._viewer.layers:
+                self._viewer.layers["cells_fov"].data = meds
+            else:
+                self._viewer.add_points(
+                    meds, name="cells_fov", size=8,
+                    face_color="red", border_color="white", opacity=0.8
+                )
+
+            # Display ROI masks as Labels layer (requires FOV to be loaded)
+            self._show_stat_masks(cells_stat)
+
+            self._update_load_info()
+            self._set_status(
+                f"Loaded {len(cells_stat)} cells from {Path(path).name}{iscell_note}"
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "Error loading stat.npy", str(e))
+
+    def _show_stat_masks(self, cells_stat: np.ndarray) -> None:
+        """Create/update a Labels layer with per-cell ROI masks.
+
+        Each cell's pixels (from ypix / xpix) are painted with its 1-based index.
+        Requires the 'fov' image layer to be present for shape information.
+        """
+        try:
+            fov_layer = self._viewer.layers["fov"]
+        except KeyError:
+            return  # FOV not loaded yet; masks will be added after FOV loads
+
+        H, W = fov_layer.data.shape[:2]
+        labels = np.zeros((H, W), dtype=np.int32)
+
+        for i, s in enumerate(cells_stat):
+            ypix = s["ypix"]
+            xpix = s["xpix"]
+            valid = (ypix >= 0) & (ypix < H) & (xpix >= 0) & (xpix < W)
+            labels[ypix[valid], xpix[valid]] = i + 1  # 1-based; 0 = background
+
+        if "cell_masks" in self._viewer.layers:
+            self._viewer.layers["cell_masks"].data = labels
+        else:
+            self._viewer.add_labels(labels, name="cell_masks", opacity=0.4)
 
     def _on_load_csv(self) -> None:
         path, _ = QFileDialog.getOpenFileName(

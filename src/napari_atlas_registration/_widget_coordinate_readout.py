@@ -238,6 +238,23 @@ class CoordinateReadoutWidget(QWidget):
     def _build_export_group(self) -> QGroupBox:
         box = QGroupBox("Export")
         layout = QVBoxLayout(box)
+
+        prefix_row = QHBoxLayout()
+        prefix_row.addWidget(QLabel("Cell name prefix:"))
+        self._prefix_edit = QLineEdit("cell")
+        self._prefix_edit.setPlaceholderText("e.g. my_fov  →  my_fov_cell_index_0")
+        prefix_row.addWidget(self._prefix_edit)
+        layout.addLayout(prefix_row)
+
+        note = QLabel(
+            "cell_id column = {prefix}_cell_index_{idx}\n"
+            "idx = original row in stat.npy (or row number for CSV input).\n"
+            "Defaults to the FOV image stem when loaded from Step 1."
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet("color: #888; font-size: 10px;")
+        layout.addWidget(note)
+
         btn = QPushButton("Save results CSV…")
         btn.clicked.connect(self._on_export)
         layout.addWidget(btn)
@@ -261,6 +278,15 @@ class CoordinateReadoutWidget(QWidget):
             self._cells_df = df
             self._cells_info.setText(
                 f"{Path(path).name}  —  {len(df)} cells")
+
+            # Auto-populate prefix: strip known Step 1/2 suffixes to recover FOV stem
+            stem = Path(path).stem
+            for suffix in ("_cells_atlas_slice", "_cells_section", "_cells_final"):
+                if stem.endswith(suffix):
+                    stem = stem[: -len(suffix)]
+                    break
+            self._prefix_edit.setText(stem)
+
             self._set_status(f"Loaded {len(df)} cells.")
         except Exception as e:
             QMessageBox.critical(self, "Error", str(e))
@@ -405,7 +431,19 @@ class CoordinateReadoutWidget(QWidget):
         path, _ = QFileDialog.getSaveFileName(
             self, "Save results CSV", "", "CSV (*.csv)")
         if not path: return
-        self._results_df.to_csv(path, index=False)
+
+        df = self._results_df.copy()
+        prefix = self._prefix_edit.text().strip() or "cell"
+
+        # Generate cell_id using original stat.npy row index when available,
+        # otherwise fall back to sequential row number.
+        if "stat_idx" in df.columns:
+            cell_ids = [f"{prefix}_cell_index_{int(idx)}" for idx in df["stat_idx"]]
+        else:
+            cell_ids = [f"{prefix}_cell_index_{i}" for i in range(len(df))]
+        df.insert(0, "cell_id", cell_ids)
+
+        df.to_csv(path, index=False)
         self._set_status(f"Saved: {Path(path).name}")
         QMessageBox.information(self, "Saved", path)
 

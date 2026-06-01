@@ -23,6 +23,8 @@ Inputs
   Allen_annotation_labels.csv — region id → name, acronym
 
 Output (cells_final.csv, one row per cell)
+  cell_id                  (e.g. my_fov_cell_index_42 — stat.npy row preserved)
+  stat_idx                 (original stat.npy row index; omitted for CSV input)
   x_fov · y_fov
   x_section · y_section
   x_rot · y_rot · z_rot   (rotated atlas slice pixel coords)
@@ -30,6 +32,30 @@ Output (cells_final.csv, one row per cell)
   region_id · region_acronym · region_name · parent_acronym
   AP_mm · ML_mm · DV_mm   (bregma-relative, Paxinos-Franklin)
 ```
+
+---
+
+## suite2p integration
+
+The plugin has first-class support for [suite2p](https://github.com/MouseLand/suite2p)
+outputs. In Step 1 the cell-loading toggle is **ON** by default:
+
+- **stat.npy** — `med` (median pixel [y, x]) is used as the per-cell centroid
+  for all downstream warping. Original row order in `stat.npy` is preserved
+  throughout; cells are never reordered.
+- **iscell.npy** — if present in the same folder as `stat.npy`, it is loaded
+  automatically and only ROIs where `iscell[:,0] == 1` are kept.
+- **Cell masks** — `ypix` / `xpix` from each ROI are painted into a napari
+  Labels layer (`cell_masks`) so you can visually inspect cell footprints
+  overlaid on the FOV image. The label value equals the cell's 1-based position
+  in the filtered list.
+- **Cell IDs** — the original `stat.npy` row index (`stat_idx`) is carried
+  through all intermediate CSVs. In the final export (Step 3) each row gets a
+  human-readable `cell_id` of the form `{prefix}_cell_index_{stat_idx}`, where
+  the prefix defaults to the FOV image filename stem.
+
+To use a plain CSV instead, uncheck **"Load cells from suite2p stat.npy"** in
+Step 1.
 
 ---
 
@@ -43,6 +69,11 @@ full brain section. Both images open in independent napari windows for
 side-by-side comparison. Landmark pairs are placed sequentially (click FOV →
 click section → row added to table). The rigid transform is fitted by
 least-squares and applied to all cell coordinates.
+
+**Cell input (choose one):**
+- **suite2p** (default): load `stat.npy`; `iscell.npy` auto-detected in same
+  folder. Cell ROI masks shown as a Labels layer on the FOV.
+- **CSV**: uncheck the toggle and load a CSV with `x` and `y` columns.
 
 ```
 T_rigid[FOV → Section]
@@ -94,11 +125,16 @@ Loads the cells CSV (with `x_ccf, y_ccf, z_ccf`) and:
    mapping (configurable dropdowns; preset buttons for Coronal / Sagittal /
    Axial).
 
+3. **Cell ID export** — set a prefix string (auto-populated from the FOV
+   filename). The saved CSV gains a `cell_id` column:
+   `{prefix}_cell_index_{stat_idx}` where `stat_idx` is the original row in
+   `stat.npy`. Row order matches `stat.npy` exactly.
+
 ```
 annotation[ap_idx, dv_idx, ml_idx]  →  region_id, acronym, name
 (ap_idx, dv_idx, ml_idx)  →  AP_mm, ML_mm, DV_mm  (bregma-relative)
 
-Saves: cells_final.csv
+Saves: cells_final.csv  (first column: cell_id)
 ```
 
 ---
